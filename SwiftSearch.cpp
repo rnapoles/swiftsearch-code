@@ -1556,7 +1556,7 @@ public:
 	template<class F>
 	void matches(F func, std::tstring &path, bool const match_paths, bool const match_streams) const
 	{
-		Matcher<F &> matcher = { this, func, match_paths, match_streams };
+		Matcher<F &> matcher = { this, func, match_paths, match_streams, &path };
 		return matcher(0x000000000005);
 	}
 
@@ -1568,7 +1568,7 @@ private:
 		F func;
 		bool match_paths;
 		bool match_streams;
-		std::tstring path;
+		std::tstring *path;
 		std::pair<std::tstring::const_iterator, std::tstring::const_iterator> name;
 		size_t depth;
 
@@ -1603,12 +1603,12 @@ private:
 					{
 						if (j->first.parent == frs && i->first.second == jn - static_cast<size_t>(1) - ji)
 						{
-							size_t const old_size = path.size();
+							size_t const old_size = path->size();
 							std::pair<std::tstring::const_iterator, std::tstring::const_iterator> old_name = name;
 							if (buffered_matching)
 							{
-								if (match_paths) { path += _T('\\'); }
-								append(path, &me->names[j->first.name.offset], j->first.name.length);
+								if (match_paths) { *path += _T('\\'); }
+								append(*path, &me->names[j->first.name.offset], j->first.name.length);
 							}
 							name.first = me->names.begin() + static_cast<ptrdiff_t>(j->first.name.offset);
 							name.second = name.first + static_cast<ptrdiff_t>(j->first.name.length);
@@ -1620,7 +1620,7 @@ private:
 							}
 							if (buffered_matching)
 							{
-								path.erase(old_size, path.size() - old_size);
+								path->erase(old_size, path->size() - old_size);
 							}
 							name = old_name;
 						}
@@ -1630,37 +1630,37 @@ private:
 				for (StreamInfos::value_type const *k0 = me->streaminfo(fr), *k = k0; k; k = me->streaminfo(k->second), ++ki)
 				{
 					if (k->first.name.offset > me->names.size()) { throw std::logic_error("invalid entry"); }
-					size_t const old_size = path.size();
+					size_t const old_size = path->size();
 					if (stream_prefix_size)
 					{
-						append(path, stream_prefix, stream_prefix_size);
+						append(*path, stream_prefix, stream_prefix_size);
 					}
 					if (match_paths)
 					{
 						if ((fr->stdinfo.attributes & FILE_ATTRIBUTE_DIRECTORY) && frs != 0x00000005)
 						{
-							path += _T('\\');
+							*path += _T('\\');
 						}
 					}
 					if (match_streams)
 					{
 						if (k->first.name.length)
 						{
-							path += _T(':');
-							append(path, k->first.name.length ? &me->names[k->first.name.offset] : NULL, k->first.name.length);
+							*path += _T(':');
+							append(*path, k->first.name.length ? &me->names[k->first.name.offset] : NULL, k->first.name.length);
 						}
 						bool const is_alternate_stream = k->first.type_name_id && (k->first.type_name_id << (CHAR_BIT / 2)) != ntfs::AttributeData;
 						if (is_alternate_stream)
 						{
-							if (!k->first.name.length) { path += _T(':'); }
-							path += _T(':'), append(path, ntfs::attribute_names[k->first.type_name_id].data, ntfs::attribute_names[k->first.type_name_id].size);
+							if (!k->first.name.length) { *path += _T(':'); }
+							*path += _T(':'), append(*path, ntfs::attribute_names[k->first.type_name_id].data, ntfs::attribute_names[k->first.type_name_id].size);
 						}
 					}
 					key_type const new_key = { frs, name_info, ki, k == k0 ? ~static_cast<key_type::direct_address_type>(islot) : static_cast<key_type::direct_address_type>(k - &*me->streaminfos.begin()) };
-					func(buffered_matching ? std::pair<std::tstring::const_iterator, std::tstring::const_iterator>(path.begin(), path.end()) : name, new_key, depth);
+					func(buffered_matching ? std::pair<std::tstring::const_iterator, std::tstring::const_iterator>(path->begin(), path->end()) : name, new_key, depth);
 					if (buffered_matching)
 					{
-						path.erase(old_size, path.size() - old_size);
+						path->erase(old_size, path->size() - old_size);
 					}
 				}
 			}
