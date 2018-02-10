@@ -45,7 +45,6 @@ extern WTL::CAppModule _Module;
 #include "path.hpp"
 
 #include "BackgroundWorker.hpp"
-#include "QueryFileLayout.h"
 #include "ShellItemIDList.hpp"
 #include "CModifiedDialogImpl.hpp"
 
@@ -865,9 +864,94 @@ template<> class constant<0xD> { public: friend size_t operator *(size_t const m
 template<class It>
 typename propagate_const<typename std::iterator_traits<It>::reference, typename std::iterator_traits<It>::value_type>::type *fast_subscript(It const it, size_t const i)
 {
-	return reinterpret_cast<typename propagate_const<typename std::iterator_traits<It>::reference, typename std::iterator_traits<It>::value_type>::type *>(
-		reinterpret_cast<typename propagate_const<typename std::iterator_traits<It>::reference, unsigned char>::type *>(&*it) + i * constant<sizeof(*it)>());
+	return
+#if 1
+		&*(it + static_cast<ptrdiff_t>(i))
+#else
+		reinterpret_cast<typename propagate_const<typename std::iterator_traits<It>::reference, typename std::iterator_traits<It>::value_type>::type *>(
+			reinterpret_cast<typename propagate_const<typename std::iterator_traits<It>::reference, unsigned char>::type *>(&*it) + i * constant<sizeof(*it)>())
+#endif
+		;
 }
+
+class buffer
+{
+	typedef buffer this_type;
+	typedef void value_type_internal;
+	typedef value_type_internal *pointer_internal;
+	typedef size_t size_type_internal;
+	typedef ptrdiff_t difference_type;
+	pointer_internal p;
+	size_type_internal c, n;
+	void init() { if (!this->p && this->c) { using namespace std; this->p = malloc(this->c); } }
+public:
+	typedef value_type_internal value_type;
+	typedef size_type_internal size_type;
+	typedef pointer_internal pointer;
+	typedef value_type const *const_pointer;
+	typedef unsigned char &reference;
+	typedef unsigned char const &const_reference;
+	typedef unsigned char *iterator;
+	typedef unsigned char const *const_iterator;
+	~buffer() { using namespace std; free(this->p); }
+	buffer() : p(), c(), n() { }
+	explicit buffer(size_type const c) : p(), c(c), n() { this->init(); }
+	buffer(this_type const &other) : p(), c(other.c), n() { this->init(); this->n = static_cast<size_type>(std::uninitialized_copy(other.begin(), other.end(), this->begin()) - this->begin()); }
+	pointer get() const { return this->p; }
+	size_type size() const { return this->n; }
+	size_type capacity() const { return this->c; }
+	this_type &operator =(this_type other) { return other.swap(*this), *this; }
+	pointer tail() { return static_cast<unsigned char *>(this->p) + static_cast<ptrdiff_t>(this->n); }
+	const_pointer tail() const { return static_cast<unsigned char const *>(this->p) + static_cast<ptrdiff_t>(this->n); }
+	void swap(this_type &other) { using std::swap; swap(this->p, other.p); swap(this->c, other.c); swap(this->n, other.n); }
+	friend void swap(this_type &a, this_type &b) { return a.swap(b); }
+	iterator begin() { return static_cast<iterator>(this->get()); }
+	const_iterator begin() const { return static_cast<const_iterator>(this->get()); }
+	iterator end() { return static_cast<iterator>(this->tail()); }
+	const_iterator end() const { return static_cast<const_iterator>(this->tail()); }
+	bool empty() const { return !this->n; }
+	void clear() { buffer().swap(*this); }
+	template<class T>
+	T *emplace_back(size_type const size = sizeof(T))
+	{
+		size_type const old_size = this->size();
+		this->resize(old_size + size);
+		return new (static_cast<unsigned char *>(this->get()) + static_cast<difference_type>(old_size)) T;
+	}
+	reference operator[](size_type const i) { return *(this->begin() + static_cast<difference_type>(i)); }
+	const_reference operator[](size_type const i) const { return *(this->begin() + static_cast<difference_type>(i)); }
+	// These arguments are in BYTES and not elements, so users might get confused
+	void reserve_bytes(size_type c)
+	{
+		if (c > this->c)
+		{
+			size_type const min_c = this->c + this->c / 2;
+			if (c < min_c) { c = min_c; }
+			using namespace std;
+			this->p = realloc(this->p, this->n);  // shrink first, to avoid copying memory beyond the block
+			this->c = this->n;
+			this->p = realloc(this->p, c);
+			this->c = c;
+		}
+	}
+private:
+	void resize(size_type const n)
+	{
+		if (n <= this->c)
+		{
+			// No destructors to call here...
+			this->n = n;
+		}
+		else
+		{
+			size_type c = this->c + this->c / 2;
+			if (c < n) { c = n; }
+			using namespace std;
+			this->p = c ? realloc(this->p, c) : NULL;
+			this->n = n;
+		}
+	}
+};
 
 class NtfsIndex : public RefCounted<NtfsIndex>
 {
@@ -903,57 +987,48 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	friend struct std::is_scalar<NameInfo>;
 	struct LinkInfo
 	{
+		LinkInfo() : next_entry(negative_one) { this->name.offset = negative_one; }
+		typedef small_t<size_t>::type next_entry_type; next_entry_type next_entry;
 		NameInfo name;
 		unsigned int parent;
 	};
 	friend struct std::is_scalar<LinkInfo>;
 	struct StreamInfo : SizeInfo
 	{
-		StreamInfo() : SizeInfo(), name(), type_name_id() { }
+		StreamInfo() : SizeInfo(), next_entry(), name(), type_name_id() { }
+		typedef small_t<size_t>::type next_entry_type; next_entry_type next_entry;
 		NameInfo name;
 		unsigned char type_name_id /* zero if and only if $I30:$INDEX_ROOT or $I30:$INDEX_ALLOCATION */;
 	};
-	struct LinkInfoItem
-	{
-		typedef LinkInfo first_type; first_type first;
-		typedef small_t<size_t>::type second_type; second_type second;
-		LinkInfoItem(first_type const &first, second_type const second) : first(first), second(second) { }
-	};
-	struct StreamInfoItem
-	{
-		typedef StreamInfo first_type; first_type first;
-		typedef small_t<size_t>::type second_type; second_type second;
-		StreamInfoItem() : first(), second() { }
-		StreamInfoItem(first_type const &first, second_type const second) : first(first), second(second) { }
-	};
 	friend struct std::is_scalar<StreamInfo>;
 	typedef std::codecvt<std::tstring::value_type, char, int /*std::mbstate_t*/> CodeCvt;
-	typedef std::vector<LinkInfoItem> LinkInfos;
-	typedef std::vector<StreamInfoItem> StreamInfos;
+	typedef std::vector<LinkInfo> LinkInfos;
+	typedef std::vector<StreamInfo> StreamInfos;
 	struct Record;
 	typedef std::vector<Record> Records;
 	typedef std::vector<unsigned int> RecordsLookup;
 	struct ChildInfo
 	{
-		typedef std::pair<small_t<Records::size_type>::type, small_t<LinkInfos::size_type>::type> first_type; first_type first;
-		typedef small_t<size_t>::type second_type; second_type second;
-		ChildInfo() : first(), second() { }
-		ChildInfo(first_type const &first, second_type const second) : first(first), second(second) { }
+		ChildInfo() : next_entry(negative_one), record_number(negative_one), name_index(negative_one) { }
+		typedef small_t<size_t>::type next_entry_type; next_entry_type next_entry;
+		small_t<Records::size_type>::type record_number;
+		unsigned short name_index;
 	};
 	typedef std::vector<ChildInfo> ChildInfos;
-	struct RecordBase
+	struct Record
 	{
 		StandardInfo stdinfo;
 		unsigned short name_count, stream_count;
-		ChildInfos::value_type::first_type::second_type first_name;
+		ChildInfos::value_type::next_entry_type first_child;
+		LinkInfos::value_type first_name;
 		StreamInfos::value_type first_stream;
-		ChildInfos::value_type first_child;
+		Record() : stdinfo(), name_count(), stream_count(), first_name(), first_stream(), first_child(negative_one)
+		{
+			this->stdinfo.attributes = negative_one;
+			this->first_stream.name.offset = negative_one;
+			this->first_stream.next_entry = negative_one;
+		}
 	};
-	struct Record : RecordBase
-	{
-		// unsigned char padding [(1 << 7) - sizeof(RecordBase)];
-	};
-	enum { TEMP = sizeof(LinkInfo) };
 #pragma pack(pop)
 	friend struct std::is_scalar<Record>;
 	mutable mutex _mutex;
@@ -991,16 +1066,6 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 			ptrdiff_t const j = (existing_to_revalidate ? *existing_to_revalidate : this->records_data.end()) - this->records_data.begin();
 			*k = static_cast<unsigned int>(this->records_data.size());
 			this->records_data.resize(this->records_data.size() + 1);
-			Record &empty_record = this->records_data.back();
-			empty_record.name_count = 0;
-			empty_record.stream_count = 0;
-			empty_record.stdinfo.attributes = negative_one;
-			empty_record.first_name = negative_one;
-			empty_record.first_child.second = negative_one;
-			empty_record.first_child.first.first = negative_one;
-			empty_record.first_stream.first.name.offset = negative_one;
-			empty_record.first_stream.first.name.length = 0;
-			empty_record.first_stream.second = negative_one;
 			if (existing_to_revalidate) { *existing_to_revalidate = this->records_data.begin() + j; }
 		}
 		return this->records_data.begin() + static_cast<ptrdiff_t>(*k);
@@ -1027,14 +1092,18 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	Records::value_type * find(key_type_internal::frs_type const frs) { return this->_find(this, frs); }
 	Records::value_type const * find(key_type_internal::frs_type const frs) const { return this->_find(this, frs); }
 
-	ChildInfos::value_type *childinfo(ChildInfo::second_type const i) { return !~i ? NULL : fast_subscript(this->childinfos.begin(), i); }
-	ChildInfos::value_type const *childinfo(ChildInfo::second_type const i) const { return !~i ? NULL : fast_subscript(this->childinfos.begin(), i); }
-	LinkInfos::value_type const *nameinfo(LinkInfoItem::second_type const i) const { return !~i ? NULL : fast_subscript(this->nameinfos.begin(), i); }
-	LinkInfos::value_type const *nameinfo(Records::value_type const * const i) const { return this->nameinfo(i->first_name); }
-	StreamInfos::value_type *streaminfo(StreamInfoItem::second_type const i) { return !~i ? NULL : fast_subscript(this->streaminfos.begin(), i); }
-	StreamInfos::value_type const *streaminfo(StreamInfoItem::second_type const i) const { return !~i ? NULL : fast_subscript(this->streaminfos.begin(), i); }
-	StreamInfos::value_type *streaminfo(Records::value_type *const i) { assert(~i->first_stream.first.name.offset || (!i->first_stream.first.name.length && !i->first_stream.first.length)); return ~i->first_stream.first.name.offset ? &i->first_stream : NULL; }
-	StreamInfos::value_type const *streaminfo(Records::value_type const *const i) const { assert(~i->first_stream.first.name.offset || (!i->first_stream.first.name.length && !i->first_stream.first.length)); return ~i->first_stream.first.name.offset ? &i->first_stream : NULL; }
+	ChildInfos::value_type *childinfo(Records::value_type *const i) { return this->childinfo(i->first_child); }
+	ChildInfos::value_type const *childinfo(Records::value_type const *const i) const { return this->childinfo(i->first_child); }
+	ChildInfos::value_type *childinfo(ChildInfo::next_entry_type const i) { return !~i ? NULL : fast_subscript(this->childinfos.begin(), i); }
+	ChildInfos::value_type const *childinfo(ChildInfo::next_entry_type const i) const { return !~i ? NULL : fast_subscript(this->childinfos.begin(), i); }
+	LinkInfos::value_type *nameinfo(LinkInfo::next_entry_type const i) { return !~i ? NULL : fast_subscript(this->nameinfos.begin(), i); }
+	LinkInfos::value_type const *nameinfo(LinkInfo::next_entry_type const i) const { return !~i ? NULL : fast_subscript(this->nameinfos.begin(), i); }
+	LinkInfos::value_type *nameinfo(Records::value_type *const i) { return ~i->first_name.name.offset ? &i->first_name : NULL; }
+	LinkInfos::value_type const *nameinfo(Records::value_type const *const i) const { return ~i->first_name.name.offset ? &i->first_name : NULL; }
+	StreamInfos::value_type *streaminfo(StreamInfo::next_entry_type const i) { return !~i ? NULL : fast_subscript(this->streaminfos.begin(), i); }
+	StreamInfos::value_type const *streaminfo(StreamInfo::next_entry_type const i) const { return !~i ? NULL : fast_subscript(this->streaminfos.begin(), i); }
+	StreamInfos::value_type *streaminfo(Records::value_type *const i) { assert(~i->first_stream.name.offset || (!i->first_stream.name.length && !i->first_stream.length)); return ~i->first_stream.name.offset ? &i->first_stream : NULL; }
+	StreamInfos::value_type const *streaminfo(Records::value_type const *const i) const { assert(~i->first_stream.name.offset || (!i->first_stream.name.length && !i->first_stream.length)); return ~i->first_stream.name.offset ? &i->first_stream : NULL; }
 public:
 	typedef key_type_internal key_type;
 	typedef StandardInfo standard_info;
@@ -1187,207 +1256,118 @@ public:
 		}
 		catch (std::bad_alloc &) { }
 	}
-	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, bool const is_file_layout) volatile
+	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size) volatile
 	{
 		this_type *const me = this->unvolatile();
 		lock_guard<mutex> const lock(me->_mutex);
 		// TODO: This lock prevents parallelism. Instead, add the entries to a private queue locally, then transfer them in bulk.
-		me->load(virtual_offset, buffer, size, is_file_layout);
+		me->load(virtual_offset, buffer, size);
 	}
-	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, bool const is_file_layout)
+	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size)
 	{
-		if (is_file_layout)
+		if (size % this->mft_record_size)
+		{ throw std::runtime_error("cluster size is smaller than MFT record size; split MFT records not supported"); }
+		for (size_t i = virtual_offset % this->mft_record_size ? this->mft_record_size - virtual_offset % this->mft_record_size : 0; i + this->mft_record_size <= size; i += this->mft_record_size, this->_records_so_far.fetch_add(1, atomic_namespace::memory_order_acq_rel))
 		{
-			if (size)
+			unsigned int const frs = static_cast<unsigned int>((virtual_offset + i) / this->mft_record_size);
+			ntfs::FILE_RECORD_SEGMENT_HEADER *const frsh = reinterpret_cast<ntfs::FILE_RECORD_SEGMENT_HEADER *>(&static_cast<unsigned char *>(buffer)[i]);
+			if (frsh->MultiSectorHeader.Magic == 'ELIF' && frsh->MultiSectorHeader.unfixup(this->mft_record_size) && !!(frsh->Flags & ntfs::FRH_IN_USE))
 			{
-				QUERY_FILE_LAYOUT_OUTPUT const *const output = static_cast<QUERY_FILE_LAYOUT_OUTPUT const *>(buffer);
-				for (FILE_LAYOUT_ENTRY const *i = output->FirstFile(); i; i = i->NextFile(), this->_records_so_far.fetch_add(1, atomic_namespace::memory_order_acq_rel))
+				unsigned int const frs_base = frsh->BaseFileRecordSegment ? static_cast<unsigned int>(frsh->BaseFileRecordSegment) : frs;
+				Records::iterator base_record = this->at(frs_base);
+				for (ntfs::ATTRIBUTE_RECORD_HEADER const
+					*ah = frsh->begin(); ah < frsh->end(this->mft_record_size) && ah->Type != ntfs::AttributeTypeCode() && ah->Type != ntfs::AttributeEnd; ah = ah->next())
 				{
-					unsigned int const frs_base = static_cast<unsigned char>(i->FileReferenceNumber);
-					Records::iterator base_record = this->at(frs_base);
-					if (FILE_LAYOUT_INFO_ENTRY const *const fn = i->ExtraInfo())
+					switch (ah->Type)
 					{
-						base_record->stdinfo.created = fn->BasicInformation.CreationTime.QuadPart;
-						base_record->stdinfo.written = fn->BasicInformation.LastWriteTime.QuadPart;
-						base_record->stdinfo.accessed = fn->BasicInformation.LastAccessTime.QuadPart;
-						base_record->stdinfo.attributes = fn->BasicInformation.FileAttributes;
-					}
-					for (FILE_LAYOUT_NAME_ENTRY const *fn = i->FirstName(); fn; fn = fn->NextName())
-					{
-						unsigned int const frs_parent = static_cast<unsigned int>(fn->ParentFileReferenceNumber);
-						if (fn->Flags != FILE_LAYOUT_NAME_ENTRY_DOS)
+					case ntfs::AttributeStandardInformation:
+						if (ntfs::STANDARD_INFORMATION const *const fn = static_cast<ntfs::STANDARD_INFORMATION const *>(ah->Resident.GetValue()))
 						{
-							LinkInfo info = LinkInfo();
-							info.name.offset = static_cast<unsigned int>(this->names.size());
-							info.name.length = static_cast<unsigned char>(fn->FileNameLength / sizeof(*fn->FileName));
-							info.parent = frs_parent;
-							append(this->names, fn->FileName, fn->FileNameLength / sizeof(*fn->FileName));
-							size_t const link_index = this->nameinfos.size();
-							this->nameinfos.push_back(LinkInfos::value_type(info, base_record->first_name));
-							base_record->first_name = static_cast<small_t<size_t>::type>(link_index);
-							Records::iterator const parent = this->at(frs_parent, &base_record);
-							if (~parent->first_child.first.first)
-							{
-								size_t const ichild = this->childinfos.size();
-								this->childinfos.push_back(parent->first_child);
-								parent->first_child.second = static_cast<small_t<size_t>::type>(ichild);
-							}
-							parent->first_child.first.first = frs_base;
-							parent->first_child.first.second = base_record->name_count;
-							this->_total_names_and_streams += base_record->stream_count;
-							++base_record->name_count;
+							base_record->stdinfo.created = fn->CreationTime;
+							base_record->stdinfo.written = fn->LastModificationTime;
+							base_record->stdinfo.accessed = fn->LastAccessTime;
+							base_record->stdinfo.attributes = fn->FileAttributes | ((frsh->Flags & ntfs::FRH_DIRECTORY) ? FILE_ATTRIBUTE_DIRECTORY : 0);
 						}
-					}
-					for (STREAM_LAYOUT_ENTRY const *fn = i->FirstStream(); fn; fn = fn->NextStream())
-					{
-						bool const is_nonresident = true;
-						// if (!is_nonresident || !ah->NonResident.LowestVCN)
+						break;
+					case ntfs::AttributeFileName:
+						if (ntfs::FILENAME_INFORMATION const *const fn = static_cast<ntfs::FILENAME_INFORMATION const *>(ah->Resident.GetValue()))
 						{
-							bool const isI30 = fn->StreamIdentifierLength == 4
-								&& fn->StreamIdentifier[0] == _T('$')
-								&& fn->StreamIdentifier[1] == _T('I')
-								&& fn->StreamIdentifier[2] == _T('3')
-								&& fn->StreamIdentifier[3] == _T('0')
-							;
-							// if (!isI30)
+							unsigned int const frs_parent = static_cast<unsigned int>(fn->ParentDirectory);
+							if (fn->Flags != 0x02 /* FILE_NAME_DOS */)
+							{
+								if (LinkInfos::value_type *const si = this->nameinfo(&*base_record))
+								{
+									size_t const link_index = this->nameinfos.size();
+									this->nameinfos.push_back(base_record->first_name);
+									base_record->first_name = LinkInfos::value_type();
+									base_record->first_name.next_entry = static_cast<LinkInfos::value_type::next_entry_type>(link_index);
+								}
+								base_record->first_name.name.offset = static_cast<unsigned int>(this->names.size());
+								base_record->first_name.name.length = static_cast<unsigned char>(fn->FileNameLength);
+								base_record->first_name.parent = frs_parent;
+								append(this->names, fn->FileName, fn->FileNameLength);
+								Records::iterator const parent = this->at(frs_parent, &base_record);
+								size_t const child_index = this->childinfos.size();
+								ChildInfo child_info = ChildInfo();
+								child_info.record_number = frs_base;
+								child_info.name_index = base_record->name_count;
+								child_info.next_entry = parent->first_child;
+								this->childinfos.push_back(child_info);
+								parent->first_child = static_cast<ChildInfos::value_type::next_entry_type>(child_index);
+								this->_total_names_and_streams += base_record->stream_count;
+								++base_record->name_count;
+							}
+						}
+						break;
+					// case ntfs::AttributeAttributeList:
+					// case ntfs::AttributeLoggedUtilityStream:
+					case ntfs::AttributeBitmap:
+					case ntfs::AttributeIndexAllocation:
+					case ntfs::AttributeIndexRoot:
+					case ntfs::AttributeData:
+					case ntfs::AttributeReparsePoint:
+					case ntfs::AttributeEA:
+					case ntfs::AttributeEAInformation:
+						if (!ah->IsNonResident || !ah->NonResident.LowestVCN)
+						{
+							bool const isI30 = ah->NameLength == 4 && memcmp(ah->name(), _T("$I30"), sizeof(*ah->name()) * 4) == 0;
+							if (ah->Type == (isI30 ? ntfs::AttributeIndexAllocation : ntfs::AttributeIndexRoot))
+							{
+								// Skip this -- for $I30, index header will take care of index allocation; for others, no point showing index root anyway
+							}
+							else if (!(isI30 && ah->Type == ntfs::AttributeBitmap))
 							{
 								StreamInfo info = StreamInfo();
-								if (isI30)
+								if ((ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && isI30)
 								{
 									// Suppress name
 								}
 								else
 								{
 									info.name.offset = static_cast<unsigned int>(this->names.size());
-									info.name.length = static_cast<unsigned char>(fn->StreamIdentifierLength / sizeof(*fn->StreamIdentifier));
-									append(this->names, fn->StreamIdentifier, fn->StreamIdentifierLength / sizeof(*fn->StreamIdentifier));
+									info.name.length = static_cast<unsigned char>(ah->NameLength);
+									append(this->names, ah->name(), ah->NameLength);
 								}
-								info.type_name_id = static_cast<unsigned char>(isI30 ? ntfs::AttributeIndexRoot : 0);
-								info.length = static_cast<file_size_type>(fn->EndOfFile.QuadPart);
-								info.allocated = is_nonresident ? static_cast<file_size_type>(fn->AllocationSize.QuadPart) : 0;
+								info.type_name_id = static_cast<unsigned char>((ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && isI30 ? 0 : ah->Type >> (CHAR_BIT / 2));
+								info.length = ah->IsNonResident ? static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... */ : ah->NonResident.DataSize) : ah->Resident.ValueLength;
+								info.allocated = ah->IsNonResident ? ah->NonResident.CompressionUnit ? static_cast<file_size_type>(ah->NonResident.CompressedSize) : static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... should be looking at VCNs */ : ah->NonResident.AllocatedSize) : 0;
 								info.bulkiness = info.allocated;
 								if (StreamInfos::value_type *const si = this->streaminfo(&*base_record))
 								{
 									size_t const stream_index = this->streaminfos.size();
 									this->streaminfos.push_back(*si);
-									si->second = static_cast<small_t<size_t>::type>(stream_index);
+									si->next_entry = static_cast<small_t<size_t>::type>(stream_index);
 								}
-								base_record->first_stream.first = info;
+								info.next_entry = base_record->first_stream.next_entry;
+								base_record->first_stream = info;
 								this->_total_names_and_streams += base_record->name_count;
 								++base_record->stream_count;
 							}
 						}
+						break;
 					}
 				}
-			}
-			else
-			{
-				throw std::logic_error("we know this is the last request, but are all previous requests already finished being processed?");
-			}
-		}
-		else
-		{
-			if (size % this->mft_record_size)
-			{ throw std::runtime_error("cluster size is smaller than MFT record size; split MFT records not supported"); }
-			for (size_t i = virtual_offset % this->mft_record_size ? this->mft_record_size - virtual_offset % this->mft_record_size : 0; i + this->mft_record_size <= size; i += this->mft_record_size, this->_records_so_far.fetch_add(1, atomic_namespace::memory_order_acq_rel))
-			{
-				unsigned int const frs = static_cast<unsigned int>((virtual_offset + i) / this->mft_record_size);
-				ntfs::FILE_RECORD_SEGMENT_HEADER *const frsh = reinterpret_cast<ntfs::FILE_RECORD_SEGMENT_HEADER *>(&static_cast<unsigned char *>(buffer)[i]);
-				if (frsh->MultiSectorHeader.Magic == 'ELIF' && frsh->MultiSectorHeader.unfixup(this->mft_record_size) && !!(frsh->Flags & ntfs::FRH_IN_USE))
-				{
-					unsigned int const frs_base = frsh->BaseFileRecordSegment ? static_cast<unsigned int>(frsh->BaseFileRecordSegment) : frs;
-					Records::iterator base_record = this->at(frs_base);
-					for (ntfs::ATTRIBUTE_RECORD_HEADER const
-						*ah = frsh->begin(); ah < frsh->end(this->mft_record_size) && ah->Type != ntfs::AttributeTypeCode() && ah->Type != ntfs::AttributeEnd; ah = ah->next())
-					{
-						switch (ah->Type)
-						{
-						case ntfs::AttributeStandardInformation:
-							if (ntfs::STANDARD_INFORMATION const *const fn = static_cast<ntfs::STANDARD_INFORMATION const *>(ah->Resident.GetValue()))
-							{
-								base_record->stdinfo.created = fn->CreationTime;
-								base_record->stdinfo.written = fn->LastModificationTime;
-								base_record->stdinfo.accessed = fn->LastAccessTime;
-								base_record->stdinfo.attributes = fn->FileAttributes | ((frsh->Flags & ntfs::FRH_DIRECTORY) ? FILE_ATTRIBUTE_DIRECTORY : 0);
-							}
-							break;
-						case ntfs::AttributeFileName:
-							if (ntfs::FILENAME_INFORMATION const *const fn = static_cast<ntfs::FILENAME_INFORMATION const *>(ah->Resident.GetValue()))
-							{
-								unsigned int const frs_parent = static_cast<unsigned int>(fn->ParentDirectory);
-								if (fn->Flags != 0x02 /* FILE_NAME_DOS */)
-								{
-									LinkInfo info = LinkInfo();
-									info.name.offset = static_cast<unsigned int>(this->names.size());
-									info.name.length = static_cast<unsigned char>(fn->FileNameLength);
-									info.parent = frs_parent;
-									append(this->names, fn->FileName, fn->FileNameLength);
-									size_t const link_index = this->nameinfos.size();
-									this->nameinfos.push_back(LinkInfos::value_type(info, base_record->first_name));
-									base_record->first_name = static_cast<small_t<size_t>::type>(link_index);
-									Records::iterator const parent = this->at(frs_parent, &base_record);
-									if (~parent->first_child.first.first)
-									{
-										size_t const ichild = this->childinfos.size();
-										this->childinfos.push_back(parent->first_child);
-										parent->first_child.second = static_cast<small_t<size_t>::type>(ichild);
-									}
-									parent->first_child.first.first = frs_base;
-									parent->first_child.first.second = base_record->name_count;
-									this->_total_names_and_streams += base_record->stream_count;
-									++base_record->name_count;
-								}
-							}
-							break;
-						// case ntfs::AttributeAttributeList:
-						// case ntfs::AttributeLoggedUtilityStream:
-						case ntfs::AttributeBitmap:
-						case ntfs::AttributeIndexAllocation:
-						case ntfs::AttributeIndexRoot:
-						case ntfs::AttributeData:
-						case ntfs::AttributeReparsePoint:
-						case ntfs::AttributeEA:
-						case ntfs::AttributeEAInformation:
-							if (!ah->IsNonResident || !ah->NonResident.LowestVCN)
-							{
-								bool const isI30 = ah->NameLength == 4 && memcmp(ah->name(), _T("$I30"), sizeof(*ah->name()) * 4) == 0;
-								if (ah->Type == (isI30 ? ntfs::AttributeIndexAllocation : ntfs::AttributeIndexRoot))
-								{
-									// Skip this -- for $I30, index header will take care of index allocation; for others, no point showing index root anyway
-								}
-								else if (!(isI30 && ah->Type == ntfs::AttributeBitmap))
-								{
-									StreamInfo info = StreamInfo();
-									if ((ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && isI30)
-									{
-										// Suppress name
-									}
-									else
-									{
-										info.name.offset = static_cast<unsigned int>(this->names.size());
-										info.name.length = static_cast<unsigned char>(ah->NameLength);
-										append(this->names, ah->name(), ah->NameLength);
-									}
-									info.type_name_id = static_cast<unsigned char>((ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && isI30 ? 0 : ah->Type >> (CHAR_BIT / 2));
-									info.length = ah->IsNonResident ? static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... */ : ah->NonResident.DataSize) : ah->Resident.ValueLength;
-									info.allocated = ah->IsNonResident ? ah->NonResident.CompressionUnit ? static_cast<file_size_type>(ah->NonResident.CompressedSize) : static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... should be looking at VCNs */ : ah->NonResident.AllocatedSize) : 0;
-									info.bulkiness = info.allocated;
-									if (StreamInfos::value_type *const si = this->streaminfo(&*base_record))
-									{
-										size_t const stream_index = this->streaminfos.size();
-										this->streaminfos.push_back(*si);
-										si->second = static_cast<small_t<size_t>::type>(stream_index);
-									}
-									base_record->first_stream.first = info;
-									this->_total_names_and_streams += base_record->name_count;
-									++base_record->stream_count;
-								}
-							}
-							break;
-						}
-					}
-					// fprintf(stderr, "%llx\n", frsh->BaseFileRecordSegment);
-				}
+				// fprintf(stderr, "%llx\n", frsh->BaseFileRecordSegment);
 			}
 		}
 		this->check_finished();
@@ -1411,35 +1391,35 @@ public:
 			Records::value_type const * const fr = this->find(key.frs);
 			bool found = false;
 			unsigned short ji = 0;
-			for (LinkInfos::value_type const *j = this->nameinfo(fr); !found && j; j = this->nameinfo(j->second), ++ji)
+			for (LinkInfos::value_type const *j = this->nameinfo(fr); !found && j; j = this->nameinfo(j->next_entry), ++ji)
 			{
 				if (key.name_info == (std::numeric_limits<unsigned short>::max)() || ji == key.name_info)
 				{
 					unsigned short ki = 0;
-					for (StreamInfos::value_type const *k = this->streaminfo(fr); !found && k; k = this->streaminfo(k->second), ++ki)
+					for (StreamInfos::value_type const *k = this->streaminfo(fr); !found && k; k = this->streaminfo(k->next_entry), ++ki)
 					{
-						if (k->first.name.offset + k->first.name.length > this->names.size()) { throw std::logic_error("invalid entry"); }
-						if (key.stream_info == (std::numeric_limits<unsigned short>::max)() ? !k->first.type_name_id : ki == key.stream_info)
+						if (k->name.offset + k->name.length > this->names.size()) { throw std::logic_error("invalid entry"); }
+						if (key.stream_info == (std::numeric_limits<unsigned short>::max)() ? !k->type_name_id : ki == key.stream_info)
 						{
 							found = true;
 							size_t const old_size2 = result.size();
-							append(result, &this->names[j->first.name.offset], j->first.name.length);
+							append(result, &this->names[j->name.offset], j->name.length);
 							if (leaf)
 							{
-								bool const is_alternate_stream = k->first.type_name_id && (k->first.type_name_id << (CHAR_BIT / 2)) != ntfs::AttributeData;
-								if (k->first.name.length || is_alternate_stream) { result += _T(':'); }
-								append(result, k->first.name.length ? &this->names[k->first.name.offset] : NULL, k->first.name.length);
-								if (is_alternate_stream && k->first.type_name_id < sizeof(ntfs::attribute_names) / sizeof(*ntfs::attribute_names))
+								bool const is_alternate_stream = k->type_name_id && (k->type_name_id << (CHAR_BIT / 2)) != ntfs::AttributeData;
+								if (k->name.length || is_alternate_stream) { result += _T(':'); }
+								append(result, k->name.length ? &this->names[k->name.offset] : NULL, k->name.length);
+								if (is_alternate_stream && k->type_name_id < sizeof(ntfs::attribute_names) / sizeof(*ntfs::attribute_names))
 								{
-									result += _T(':'); append(result, ntfs::attribute_names[k->first.type_name_id].data, ntfs::attribute_names[k->first.type_name_id].size);
+									result += _T(':'); append(result, ntfs::attribute_names[k->type_name_id].data, ntfs::attribute_names[k->type_name_id].size);
 								}
 							}
 							if (key.frs != 0x000000000005)
 							{
-								if (!k->first.type_name_id) { result += _T('\\'); }
+								if (!k->type_name_id) { result += _T('\\'); }
 							}
 							std::reverse(result.begin() + static_cast<ptrdiff_t>(old_size2), result.end());
-							key_type const new_key = { j->first.parent /* ... | 0 | 0 (since we want the first name of all ancestors)*/, static_cast<key_type::name_info_type>(~key_type::name_info_type()), static_cast<key_type::stream_info_type>(~key_type::stream_info_type()), static_cast<key_type::direct_address_type>(std::numeric_limits<key_type::direct_address_type>::max() / 2 + 1) };
+							key_type const new_key = { j->parent /* ... | 0 | 0 (since we want the first name of all ancestors)*/, static_cast<key_type::name_info_type>(~key_type::name_info_type()), static_cast<key_type::stream_info_type>(~key_type::stream_info_type()), static_cast<key_type::direct_address_type>(std::numeric_limits<key_type::direct_address_type>::max() / 2 + 1) };
 							key = new_key;
 						}
 					}
@@ -1466,7 +1446,7 @@ public:
 
 	size_info const &get_sizes(key_type const key) const
 	{
-		return (~key.direct_address < key.direct_address ? this->records_data[static_cast<key_type::direct_address_type>(~key.direct_address)].first_stream : *this->streaminfo(key.direct_address)).first;
+		return (~key.direct_address < key.direct_address ? this->records_data[static_cast<key_type::direct_address_type>(~key.direct_address)].first_stream : *this->streaminfo(key.direct_address));
 	}
 
 	standard_info get_stdinfo(unsigned int const frn) const volatile
@@ -1489,7 +1469,7 @@ public:
 			Records::value_type const * const i = this->find(frs);
 			unsigned short const jn = i->name_count;
 			unsigned short ji = 0;
-			for (LinkInfos::value_type const *j = this->nameinfo(i); j; j = this->nameinfo(j->second), ++ji)
+			for (LinkInfos::value_type const *j = this->nameinfo(i); j; j = this->nameinfo(j->next_entry), ++ji)
 			{
 				std::pair<std::pair<file_size_type, file_size_type>, file_size_type> const
 					subresult = this->preprocess(frs, ji, jn);
@@ -1510,18 +1490,18 @@ public:
 			Records::value_type * const fr = this->find(frs);
 			std::pair<std::pair<file_size_type, file_size_type>, file_size_type> children_size;
 			unsigned short ii = 0;
-			for (ChildInfos::value_type *i = &fr->first_child; i && ~i->first.first; i = this->childinfo(i->second), ++ii)
+			for (ChildInfos::value_type *i = this->childinfo(fr); i && ~i->record_number; i = this->childinfo(i->next_entry), ++ii)
 			{
-				Records::value_type const *const fr2 = this->find(i->first.first);
+				Records::value_type const *const fr2 = this->find(i->record_number);
 				unsigned short const jn = fr2->name_count;
 				unsigned short ji = 0;
-				for (LinkInfos::value_type const *j = this->nameinfo(fr2); j; j = this->nameinfo(j->second), ++ji)
+				for (LinkInfos::value_type const *j = this->nameinfo(fr2); j; j = this->nameinfo(j->next_entry), ++ji)
 				{
-					if (j->first.parent == frs && i->first.second == jn - static_cast<size_t>(1) - ji &&
-						(static_cast<unsigned int>(i->first.first) != frs || ji != name_info))
+					if (j->parent == frs && i->name_index == jn - static_cast<size_t>(1) - ji &&
+						(static_cast<unsigned int>(i->record_number) != frs || ji != name_info))
 					{
 						std::pair<std::pair<file_size_type, file_size_type>, file_size_type> const
-							subresult = this->preprocess(static_cast<unsigned int>(i->first.first), ji, jn);
+							subresult = this->preprocess(static_cast<unsigned int>(i->record_number), ji, jn);
 						children_size.first.first += subresult.first.first;
 						children_size.first.second += subresult.first.second;
 					}
@@ -1529,16 +1509,16 @@ public:
 			}
 			result = children_size;
 			unsigned short ki = 0;
-			for (StreamInfos::value_type *k = this->streaminfo(fr); k; k = this->streaminfo(k->second), ++ki)
+			for (StreamInfos::value_type *k = this->streaminfo(fr); k; k = this->streaminfo(k->next_entry), ++ki)
 			{
-				result.first.first += k->first.length * (name_info + 1) / total_names - k->first.length * name_info / total_names;
-				result.first.second += k->first.allocated * (name_info + 1) / total_names - k->first.allocated * name_info / total_names;
-				result.second += k->first.bulkiness * (name_info + 1) / total_names - k->first.bulkiness * name_info / total_names;
-				if (!k->first.type_name_id)
+				result.first.first += k->length * (name_info + 1) / total_names - k->length * name_info / total_names;
+				result.first.second += k->allocated * (name_info + 1) / total_names - k->allocated * name_info / total_names;
+				result.second += k->bulkiness * (name_info + 1) / total_names - k->bulkiness * name_info / total_names;
+				if (!k->type_name_id)
 				{
-					k->first.length += children_size.first.first;
-					k->first.allocated += children_size.first.second;
-					k->first.bulkiness += children_size.second;
+					k->length += children_size.first.first;
+					k->allocated += children_size.first.second;
+					k->bulkiness += children_size.second;
 				}
 			}
 		}
@@ -1556,7 +1536,7 @@ public:
 	template<class F>
 	void matches(F func, std::tstring &path, bool const match_paths, bool const match_streams) const
 	{
-		Matcher<F &> matcher = { this, func, match_paths, match_streams, &path };
+		Matcher<F &> matcher = { this, func, match_paths, match_streams, &path, 0 };
 		return matcher(0x000000000005);
 	}
 
@@ -1569,6 +1549,7 @@ private:
 		bool match_paths;
 		bool match_streams;
 		std::tstring *path;
+		size_t basename_index_in_path;
 		std::pair<std::tstring::const_iterator, std::tstring::const_iterator> name;
 		size_t depth;
 
@@ -1578,9 +1559,9 @@ private:
 			{
 				Records::value_type const * const i = me->find(frs);
 				unsigned short ji = 0;
-				for (LinkInfos::value_type const *j = me->nameinfo(i); j; j = me->nameinfo(j->second), ++ji)
+				for (LinkInfos::value_type const *j = me->nameinfo(i); j; j = me->nameinfo(j->next_entry), ++ji)
 				{
-					this->operator()(frs, ji, &me->names[j->first.name.offset], j->first.name.length);
+					this->operator()(frs, ji, &me->names[j->name.offset], j->name.length);
 				}
 			}
 		}
@@ -1594,28 +1575,30 @@ private:
 				size_t const islot = me->records_lookup[frs];
 				Records::value_type const * const fr = me->find(frs);
 				unsigned short ii = 0;
-				for (ChildInfos::value_type const *i = &fr->first_child; i && ~i->first.first; i = me->childinfo(i->second), ++ii)
+				for (ChildInfos::value_type const *i = me->childinfo(fr); i && ~i->record_number; i = me->childinfo(i->next_entry), ++ii)
 				{
-					Records::value_type const * const fr2 = me->find(i->first.first);
+					Records::value_type const * const fr2 = me->find(i->record_number);
 					unsigned short const jn = fr2->name_count;
 					unsigned short ji = 0;
-					for (LinkInfos::value_type const *j = me->nameinfo(fr2); j; j = me->nameinfo(j->second), ++ji)
+					for (LinkInfos::value_type const *j = me->nameinfo(fr2); j; j = me->nameinfo(j->next_entry), ++ji)
 					{
-						if (j->first.parent == frs && i->first.second == jn - static_cast<size_t>(1) - ji)
+						if (j->parent == frs && i->name_index == jn - static_cast<size_t>(1) - ji)
 						{
 							size_t const old_size = path->size();
+							size_t old_basename_index_in_path = basename_index_in_path;
 							std::pair<std::tstring::const_iterator, std::tstring::const_iterator> old_name = name;
 							if (buffered_matching)
 							{
-								if (match_paths) { *path += _T('\\'); }
-								append(*path, &me->names[j->first.name.offset], j->first.name.length);
+								if (match_paths || match_streams) { *path += _T('\\'); }
+								basename_index_in_path = path->size();
+								append(*path, &me->names[j->name.offset], j->name.length);
 							}
-							name.first = me->names.begin() + static_cast<ptrdiff_t>(j->first.name.offset);
-							name.second = name.first + static_cast<ptrdiff_t>(j->first.name.length);
-							if (static_cast<key_type::frs_type>(i->first.first) != frs || ji != name_info)
+							name.first = me->names.begin() + static_cast<ptrdiff_t>(j->name.offset);
+							name.second = name.first + static_cast<ptrdiff_t>(j->name.length);
+							if (static_cast<key_type::frs_type>(i->record_number) != frs || ji != name_info)
 							{
 								++depth;
-								this->operator()(static_cast<key_type::frs_type>(i->first.first), ji, NULL, 0);
+								this->operator()(static_cast<key_type::frs_type>(i->record_number), ji, NULL, 0);
 								--depth;
 							}
 							if (buffered_matching)
@@ -1623,19 +1606,20 @@ private:
 								path->erase(old_size, path->size() - old_size);
 							}
 							name = old_name;
+							basename_index_in_path = old_basename_index_in_path;
 						}
 					}
 				}
 				unsigned short ki = 0;
-				for (StreamInfos::value_type const *k0 = me->streaminfo(fr), *k = k0; k; k = me->streaminfo(k->second), ++ki)
+				for (StreamInfos::value_type const *k0 = me->streaminfo(fr), *k = k0; k; k = me->streaminfo(k->next_entry), ++ki)
 				{
-					if (k->first.name.offset > me->names.size()) { throw std::logic_error("invalid entry"); }
+					if (k->name.offset > me->names.size()) { throw std::logic_error("invalid entry"); }
 					size_t const old_size = path->size();
 					if (stream_prefix_size)
 					{
 						append(*path, stream_prefix, stream_prefix_size);
 					}
-					if (match_paths)
+					if (match_paths || match_streams)
 					{
 						if ((fr->stdinfo.attributes & FILE_ATTRIBUTE_DIRECTORY) && frs != 0x00000005)
 						{
@@ -1644,20 +1628,20 @@ private:
 					}
 					if (match_streams)
 					{
-						if (k->first.name.length)
+						if (k->name.length)
 						{
 							*path += _T(':');
-							append(*path, k->first.name.length ? &me->names[k->first.name.offset] : NULL, k->first.name.length);
+							append(*path, k->name.length ? &me->names[k->name.offset] : NULL, k->name.length);
 						}
-						bool const is_alternate_stream = k->first.type_name_id && (k->first.type_name_id << (CHAR_BIT / 2)) != ntfs::AttributeData;
+						bool const is_alternate_stream = k->type_name_id && (k->type_name_id << (CHAR_BIT / 2)) != ntfs::AttributeData;
 						if (is_alternate_stream)
 						{
-							if (!k->first.name.length) { *path += _T(':'); }
-							*path += _T(':'), append(*path, ntfs::attribute_names[k->first.type_name_id].data, ntfs::attribute_names[k->first.type_name_id].size);
+							if (!k->name.length) { *path += _T(':'); }
+							*path += _T(':'), append(*path, ntfs::attribute_names[k->type_name_id].data, ntfs::attribute_names[k->type_name_id].size);
 						}
 					}
 					key_type const new_key = { frs, name_info, ki, k == k0 ? ~static_cast<key_type::direct_address_type>(islot) : static_cast<key_type::direct_address_type>(k - &*me->streaminfos.begin()) };
-					func(buffered_matching ? std::pair<std::tstring::const_iterator, std::tstring::const_iterator>(path->begin(), path->end()) : name, new_key, depth);
+					func(buffered_matching ? std::pair<std::tstring::const_iterator, std::tstring::const_iterator>(path->begin() + (match_paths ? 0 : static_cast<ptrdiff_t>(basename_index_in_path)), path->end()) : name, new_key, depth);
 					if (buffered_matching)
 					{
 						path->erase(old_size, path->size() - old_size);
@@ -2121,30 +2105,36 @@ class OverlappedNtfsMftReadPayload::ReadOperation : public Overlapped
 	unsigned long long _voffset;
 	static mutex recycled_mutex;
 	static std::vector<std::pair<size_t, void *> > recycled;
-	bool _is_file_layout, _is_bitmap;
+	bool _is_bitmap;
 	boost::intrusive_ptr<OverlappedNtfsMftReadPayload volatile> q;
 	static void *operator new(size_t n)
 	{
 		void *p;
 		if (false)
 		{
-			lock_guard<mutex> guard(recycled_mutex);
-			size_t ifound = recycled.size();
-			for (size_t i = 0; i != recycled.size(); ++i)
 			{
-				if (recycled[i].first >= n && (ifound >= recycled.size() || recycled[i].first <= recycled[ifound].first))
+				lock_guard<mutex> guard(recycled_mutex);
+				size_t ifound = recycled.size();
+				for (size_t i = 0; i != recycled.size(); ++i)
 				{
-					ifound = i;
+					if (recycled[i].first >= n && (ifound >= recycled.size() || recycled[i].first <= recycled[ifound].first))
+					{
+						ifound = i;
+					}
+				}
+				if (ifound < recycled.size())
+				{
+					p = recycled[ifound].second;
+					recycled.erase(recycled.begin() + static_cast<ptrdiff_t>(ifound));
+				}
+				else
+				{
+					p = NULL;
 				}
 			}
-			if (ifound >= recycled.size())
+			if (!p)
 			{
-				p = malloc(n);
-			}
-			else
-			{
-				p = recycled[ifound].second;
-				recycled.erase(recycled.begin() + static_cast<ptrdiff_t>(ifound));
+				p = malloc(n) /* so we can use _msize() */;
 			}
 		}
 		else { p = ::operator new(n); }
@@ -2165,11 +2155,9 @@ public:
 	}
 	static void operator delete(void *p, size_t /*m*/) { return operator delete(p); }
 	explicit ReadOperation(boost::intrusive_ptr<OverlappedNtfsMftReadPayload volatile> const &q, bool const is_bitmap)
-		: Overlapped(), _voffset(), q(q), _is_file_layout(), _is_bitmap(is_bitmap) { }
+		: Overlapped(), _voffset(), q(q), _is_bitmap(is_bitmap) { }
 	unsigned long long voffset() { return this->_voffset; }
 	void voffset(unsigned long long const value) { this->_voffset = value; }
-	bool is_file_layout() const { return this->_is_file_layout; }
-	void is_file_layout(bool const value) { this->_is_file_layout = value; }
 	int operator()(size_t const size, uintptr_t const /*key*/)
 	{
 		OverlappedNtfsMftReadPayload *const q = const_cast<OverlappedNtfsMftReadPayload *>(static_cast<OverlappedNtfsMftReadPayload volatile *>(this->q.get()));
@@ -2202,7 +2190,7 @@ public:
 						q->p->reserve(valid_records);
 					}
 				}
-				q->p->load(this->voffset(), buffer, size, this->is_file_layout());
+				q->p->load(this->voffset(), buffer, size);
 			}
 		}
 		return -1;
@@ -2226,7 +2214,6 @@ bool OverlappedNtfsMftReadPayload::queue_next() volatile
 			boost::intrusive_ptr<ReadOperation> p(new(cb) ReadOperation(this, true));
 			p->offset(me->bitmap_ret_ptrs[jdata].second * static_cast<long long>(me->cluster_size));
 			p->voffset(me->bitmap_ret_ptrs[jdata].first.first * me->cluster_size);
-			p->is_file_layout(false);
 			void *const buffer = p.get() + 1;
 			if (ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
 			{
@@ -2250,6 +2237,7 @@ bool OverlappedNtfsMftReadPayload::queue_next() volatile
 	}
 	if (!handled)
 	{
+		// TODO: PERF: Optimization opportunity: only read the valid MFT entries, based on $MFT::$BITMAP
 		size_t const jdata = this->jdata.fetch_add(1, atomic_namespace::memory_order_acq_rel);
 		if (jdata < me->data_ret_ptrs.size())
 		{
@@ -2258,38 +2246,20 @@ bool OverlappedNtfsMftReadPayload::queue_next() volatile
 			boost::intrusive_ptr<ReadOperation> p(new(cb) ReadOperation(this, false));
 			p->offset(me->data_ret_ptrs[jdata].second * static_cast<long long>(me->cluster_size));
 			p->voffset(me->data_ret_ptrs[jdata].first.first * me->cluster_size);
-			QUERY_FILE_LAYOUT_INPUT input = { 1, QUERY_FILE_LAYOUT_INCLUDE_EXTENTS | QUERY_FILE_LAYOUT_INCLUDE_EXTRA_INFO | QUERY_FILE_LAYOUT_INCLUDE_NAMES | QUERY_FILE_LAYOUT_INCLUDE_STREAMS | QUERY_FILE_LAYOUT_RESTART | QUERY_FILE_LAYOUT_INCLUDE_STREAMS_WITH_NO_CLUSTERS_ALLOCATED, QUERY_FILE_LAYOUT_FILTER_TYPE_FILEID };
-			input.Filter.FileReferenceRanges->StartingFileReferenceNumber = (me->data_ret_ptrs[jdata].first.first * me->cluster_size) / me->p->mft_record_size;
-			input.Filter.FileReferenceRanges->EndingFileReferenceNumber = (me->data_ret_ptrs[jdata].first.first * me->cluster_size + cb) / me->p->mft_record_size;
-			p->is_file_layout(false);
 			void *const buffer = p.get() + 1;
-			if (p->is_file_layout() && DeviceIoControl(me->p->volume(), FSCTL_QUERY_FILE_LAYOUT, &input, sizeof(input), buffer, cb, NULL, p.get()))
+			if (ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
 			{
-				any = true, p.detach();
-			}
-			else if (p->is_file_layout() && GetLastError() == ERROR_HANDLE_EOF)
-			{
-				if (PostQueuedCompletionStatus(me->iocp, 0, 0, p.get()))
-				{
-					p.detach();
-				}
-			}
-			else
-			{
-				if (ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
-				{
-					if (PostQueuedCompletionStatus(me->iocp, cb, 0, p.get()))
-					{
-						any = true, p.detach();
-					}
-					else { CheckAndThrow(false); }
-				}
-				else if (GetLastError() == ERROR_IO_PENDING)
+				if (PostQueuedCompletionStatus(me->iocp, cb, 0, p.get()))
 				{
 					any = true, p.detach();
 				}
 				else { CheckAndThrow(false); }
 			}
+			else if (GetLastError() == ERROR_IO_PENDING)
+			{
+				any = true, p.detach();
+			}
+			else { CheckAndThrow(false); }
 		}
 		else if (jdata > me->data_ret_ptrs.size())
 		{
@@ -2647,6 +2617,17 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 			}
 			return *(this->base.begin() + static_cast<ptrdiff_t>(i));
 		}
+#if __cplusplus >= 201103L || defined(__GXX_EXPERIMENTAL_CXX0X__) || defined(_MSC_VER) && _MSC_VER >= 1600
+#define X_HAS_MOVE_SEMANTICS
+#elif defined(__clang)
+#if __has_feature(cxx_rvalue_references)
+#define X_HAS_MOVE_SEMANTICS
+#endif
+#endif
+#ifdef  X_HAS_MOVE_SEMANTICS
+		void push(value_type &&value) { return this->base.push_back(static_cast<value_type &&>(value)); }
+#endif
+#undef  X_HAS_MOVE_SEMANTICS
 		void push(value_type const &value) { return this->base.push_back(value); }
 		void insert_from(this_type const &other) { return this->base.insert_from(other.base); }
 		void clear_ordering() { return this->ordering.clear(); }
