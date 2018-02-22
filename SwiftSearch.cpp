@@ -224,7 +224,7 @@ inline bool wildcard(TCHAR const *patBegin, TCHAR const *const patEnd, It2 strBe
 	typedef TCHAR const *It1;
 	(void)tr;
 	if (patBegin == patEnd) { return strBegin == strEnd; }
-	if (patEnd - patBegin >= 2 && *patBegin == _T('*') && *(patEnd - 1) == _T('*') && tr.find(patBegin + 1, patEnd - patBegin - 2, _T('*')) == patEnd - 1)
+	if (patEnd - patBegin >= 2 && *patBegin == _T('*') && *(patEnd - 1) == _T('*') && tr.find(patBegin + 1, patEnd - patBegin - 2, _T('*')) == patEnd - 1 && tr.find(patBegin + 1, patEnd - patBegin - 2, _T('?')) == patEnd - 1)
 	{
 		// TODO: just a substring search... no need for full-blown wildcard matching
 		char_traits_equals<Tr> cte = { &tr };
@@ -756,27 +756,31 @@ std::vector<std::pair<unsigned long long, long long> > get_mft_retrieval_pointer
 			winnt::OBJECT_ATTRIBUTES oa = { sizeof(oa), root_dir, &us };
 			winnt::IO_STATUS_BLOCK iosb;
 			unsigned long const error = winnt::RtlNtStatusToDosError(winnt::NtOpenFile(&handle.value, FILE_READ_ATTRIBUTES | SYNCHRONIZE, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0x00200000 /* FILE_OPEN_REPARSE_POINT */ | 0x00000020 /* FILE_SYNCHRONOUS_IO_NONALERT */));
-			if (error) { SetLastError(error); CheckAndThrow(!error); }
+			if (error == ERROR_FILE_NOT_FOUND) { handle.value = NULL; /* do nothing */ }
+			else if (error) { SetLastError(error); CheckAndThrow(!error); }
 		}
 	}
-	result.resize(1 + (sizeof(RETRIEVAL_POINTERS_BUFFER) - 1) / sizeof(Result::value_type));
-	STARTING_VCN_INPUT_BUFFER input = {};
-	BOOL success;
-	for (unsigned long nr; !(success = DeviceIoControl(handle, FSCTL_GET_RETRIEVAL_POINTERS, &input, sizeof(input), &*result.begin(), static_cast<unsigned long>(result.size()) * sizeof(*result.begin()), &nr, NULL), success) && GetLastError() == ERROR_MORE_DATA;)
+	if (handle.value)
 	{
-		size_t const n = result.size();
-		Result(/* free old memory */).swap(result);
-		Result(n * 2).swap(result);
+		result.resize(1 + (sizeof(RETRIEVAL_POINTERS_BUFFER) - 1) / sizeof(Result::value_type));
+		STARTING_VCN_INPUT_BUFFER input = {};
+		BOOL success;
+		for (unsigned long nr; !(success = DeviceIoControl(handle, FSCTL_GET_RETRIEVAL_POINTERS, &input, sizeof(input), &*result.begin(), static_cast<unsigned long>(result.size()) * sizeof(*result.begin()), &nr, NULL), success) && GetLastError() == ERROR_MORE_DATA;)
+		{
+			size_t const n = result.size();
+			Result(/* free old memory */).swap(result);
+			Result(n * 2).swap(result);
+		}
+		CheckAndThrow(success);
+		if (size)
+		{
+			LARGE_INTEGER large_size;
+			CheckAndThrow(GetFileSizeEx(handle, &large_size));
+			*size = large_size.QuadPart;
+		}
+		result.erase(result.begin() + 1 + reinterpret_cast<unsigned long const &>(*result.begin()), result.end());
+		result.erase(result.begin(), result.begin() + 1);
 	}
-	CheckAndThrow(success);
-	if (size)
-	{
-		LARGE_INTEGER large_size;
-		CheckAndThrow(GetFileSizeEx(handle, &large_size));
-		*size = large_size.QuadPart;
-	}
-	result.erase(result.begin() + 1 + reinterpret_cast<unsigned long const &>(*result.begin()), result.end());
-	result.erase(result.begin(), result.begin() + 1);
 	return result;
 }
 
@@ -1212,21 +1216,65 @@ public:
 		bool const b = finished && !this->_root_path.empty();
 		if (b)
 		{
-			size_t volatile arr[] =
+			struct
 			{
-				this->names.size() * sizeof(*this->names.begin()),
-				this->records_data.size() * sizeof(*this->records_data.begin()),
-				this->records_lookup.size() * sizeof(*this->records_lookup.begin()),
-				this->nameinfos.size() * sizeof(*this->nameinfos.begin()),
-				this->streaminfos.size() * sizeof(*this->streaminfos.begin()),
-				this->childinfos.size() * sizeof(*this->childinfos.begin()),
-			};
-			for (size_t i = 0; i < sizeof(arr) / sizeof(*arr); i++)
-			{
-				arr[i] = arr[i];
-			}
-			typedef std::tstring::const_iterator It;
-			this->preprocess(0x000000000005);
+				NtfsIndex *me;
+				std::vector<unsigned long long> scratch;
+				std::pair<std::pair<file_size_type, file_size_type>, file_size_type> operator()(key_type::frs_type const frs, key_type::name_info_type const name_info, unsigned short const total_names)
+				{
+					size_t const old_scratch_size = scratch.size();
+					std::pair<std::pair<file_size_type, file_size_type>, file_size_type> result;
+					if (frs < me->records_lookup.size())
+					{
+						Records::value_type *const fr = me->find(frs);
+						std::pair<std::pair<file_size_type, file_size_type>, file_size_type> children_size;
+						for (ChildInfos::value_type *i = me->childinfo(fr); i && ~i->record_number; i = me->childinfo(i->next_entry))
+						{
+							Records::value_type *const fr2 = me->find(i->record_number);
+							unsigned short const jn = fr2->name_count;
+							unsigned short ji = 0;
+							for (LinkInfos::value_type *j = me->nameinfo(fr2); j; j = me->nameinfo(j->next_entry), ++ji)
+							{
+								if (i->name_index == jn - static_cast<size_t>(1) - ji)
+								{
+									if (static_cast<unsigned int>(i->record_number) != frs)  /* root directory is the only one that is a child of itself */
+									{
+										std::pair<std::pair<file_size_type, file_size_type>, file_size_type> const
+											subresult = this->operator()(static_cast<unsigned int>(i->record_number), ji, jn);
+										scratch.push_back(subresult.second);
+										children_size.first.first += subresult.first.first;
+										children_size.first.second += subresult.first.second;
+										children_size.second += subresult.second;
+									}
+								}
+							}
+						}
+						std::sort(scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size), scratch.end());
+						unsigned long long const threshold = children_size.first.second / 100;
+						while (scratch.size() > old_scratch_size && scratch.back() >= threshold)
+						{
+							children_size.second = children_size.second - scratch.back();
+							scratch.pop_back();
+						}
+						result = children_size;
+						for (StreamInfos::value_type *k = me->streaminfo(fr); k; k = me->streaminfo(k->next_entry))
+						{
+							result.first.first += k->length * (name_info + 1) / total_names - k->length * name_info / total_names;
+							result.first.second += k->allocated * (name_info + 1) / total_names - k->allocated * name_info / total_names;
+							result.second += k->bulkiness * (name_info + 1) / total_names - k->bulkiness * name_info / total_names;
+							if (!k->type_name_id)
+							{
+								k->length += children_size.first.first;
+								k->allocated += children_size.first.second;
+								k->bulkiness += children_size.second;
+							}
+						}
+					}
+					scratch.erase(scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size), scratch.end());
+					return result;
+				}
+			} preprocessor = { this };
+			preprocessor(0x000000000005, 0, 1);
 			Handle().swap(this->_volume);
 			_ftprintf(stderr, _T("Finished: %s (%u ms)\n"), this->_root_path.c_str(), (clock() - begin_time) * 1000U / CLOCKS_PER_SEC);
 		}
@@ -1239,8 +1287,9 @@ public:
 		lock_guard<mutex> const lock(me->_mutex);
 		me->reserve(records);
 	}
-	void reserve(unsigned int const records)
+	void reserve(unsigned int records)
 	{
+		if (!records) { mft_capacity = this->mft_capacity; }
 		this->_expected_records = records;
 		try
 		{
@@ -1459,70 +1508,6 @@ public:
 	standard_info const &get_stdinfo(unsigned int const frn) const
 	{
 		return this->find(frn)->stdinfo;
-	}
-
-	std::pair<std::pair<file_size_type, file_size_type>, file_size_type> preprocess(key_type::frs_type const frs)
-	{
-		std::pair<std::pair<file_size_type, file_size_type>, file_size_type> result;
-		if (frs < this->records_lookup.size())
-		{
-			Records::value_type const * const i = this->find(frs);
-			unsigned short const jn = i->name_count;
-			unsigned short ji = 0;
-			for (LinkInfos::value_type const *j = this->nameinfo(i); j; j = this->nameinfo(j->next_entry), ++ji)
-			{
-				std::pair<std::pair<file_size_type, file_size_type>, file_size_type> const
-					subresult = this->preprocess(frs, ji, jn);
-				result.first.first += subresult.first.first;
-				result.first.second += subresult.first.second;
-				result.second += subresult.second;
-				++ji;
-			}
-		}
-		return result;
-	}
-
-	std::pair<std::pair<file_size_type, file_size_type>, file_size_type> preprocess(key_type::frs_type const frs, key_type::name_info_type const name_info, unsigned short const total_names)
-	{
-		std::pair<std::pair<file_size_type, file_size_type>, file_size_type> result;
-		if (frs < this->records_lookup.size())
-		{
-			Records::value_type * const fr = this->find(frs);
-			std::pair<std::pair<file_size_type, file_size_type>, file_size_type> children_size;
-			unsigned short ii = 0;
-			for (ChildInfos::value_type *i = this->childinfo(fr); i && ~i->record_number; i = this->childinfo(i->next_entry), ++ii)
-			{
-				Records::value_type const *const fr2 = this->find(i->record_number);
-				unsigned short const jn = fr2->name_count;
-				unsigned short ji = 0;
-				for (LinkInfos::value_type const *j = this->nameinfo(fr2); j; j = this->nameinfo(j->next_entry), ++ji)
-				{
-					if (j->parent == frs && i->name_index == jn - static_cast<size_t>(1) - ji &&
-						(static_cast<unsigned int>(i->record_number) != frs || ji != name_info))
-					{
-						std::pair<std::pair<file_size_type, file_size_type>, file_size_type> const
-							subresult = this->preprocess(static_cast<unsigned int>(i->record_number), ji, jn);
-						children_size.first.first += subresult.first.first;
-						children_size.first.second += subresult.first.second;
-					}
-				}
-			}
-			result = children_size;
-			unsigned short ki = 0;
-			for (StreamInfos::value_type *k = this->streaminfo(fr); k; k = this->streaminfo(k->next_entry), ++ki)
-			{
-				result.first.first += k->length * (name_info + 1) / total_names - k->length * name_info / total_names;
-				result.first.second += k->allocated * (name_info + 1) / total_names - k->allocated * name_info / total_names;
-				result.second += k->bulkiness * (name_info + 1) / total_names - k->bulkiness * name_info / total_names;
-				if (!k->type_name_id)
-				{
-					k->length += children_size.first.first;
-					k->allocated += children_size.first.second;
-					k->bulkiness += children_size.second;
-				}
-			}
-		}
-		return result;
 	}
 
 	template<class F>
@@ -2185,10 +2170,8 @@ public:
 			{
 				if (!q->nbitmap_chunks_left.load(atomic_namespace::memory_order_acquire))  // 'nbitmap_chunks_left' is to make sure we've finished reading the entire bitmap, even with concurrent reads
 				{
-					if (unsigned int const valid_records = q->valid_records.exchange(0 /* make sure this doesn't happen twice */, atomic_namespace::memory_order_acq_rel))
-					{
-						q->p->reserve(valid_records);
-					}
+					unsigned int const valid_records = q->valid_records.exchange(0 /* make sure this doesn't happen twice */, atomic_namespace::memory_order_acq_rel);
+					q->p->reserve(valid_records);
 				}
 				q->p->load(this->voffset(), buffer, size);
 			}
