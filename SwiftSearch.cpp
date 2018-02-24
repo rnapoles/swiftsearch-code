@@ -1305,17 +1305,18 @@ public:
 		}
 		catch (std::bad_alloc &) { }
 	}
-	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size) volatile
+	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, unsigned long long const skipped_begin) volatile
 	{
 		this_type *const me = this->unvolatile();
 		lock_guard<mutex> const lock(me->_mutex);
 		// TODO: This lock prevents parallelism. Instead, add the entries to a private queue locally, then transfer them in bulk.
-		me->load(virtual_offset, buffer, size);
+		me->load(virtual_offset, buffer, size, skipped_begin);
 	}
-	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size)
+	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, unsigned long long const skipped_begin)
 	{
 		if (size % this->mft_record_size)
-		{ throw std::runtime_error("cluster size is smaller than MFT record size; split MFT records not supported"); }
+		{ throw std::runtime_error("Cluster size is smaller than MFT record size; split MFT records (over multiple clusters) not supported. Defragmenting your MFT may sometimes avoid this condition."); }
+		if (skipped_begin) { this->_records_so_far.fetch_add(static_cast<unsigned int>(skipped_begin / this->mft_record_size)); }
 		for (size_t i = virtual_offset % this->mft_record_size ? this->mft_record_size - virtual_offset % this->mft_record_size : 0; i + this->mft_record_size <= size; i += this->mft_record_size, this->_records_so_far.fetch_add(1, atomic_namespace::memory_order_acq_rel))
 		{
 			unsigned int const frs = static_cast<unsigned int>((virtual_offset + i) / this->mft_record_size);
@@ -2062,7 +2063,24 @@ public:
 
 class OverlappedNtfsMftReadPayload : public Overlapped
 {
-	typedef std::vector<std::pair<std::pair<unsigned long long, unsigned long long>, long long> > RetPtrs;
+	struct RetPtr
+	{
+		unsigned long long vcn, cluster_count;
+		long long lcn;
+		atomic_namespace::atomic<unsigned long long> skip_begin;
+		RetPtr(unsigned long long const vcn, unsigned long long const cluster_count, unsigned long long const lcn) : vcn(vcn), cluster_count(cluster_count), lcn(lcn), skip_begin(0) { }
+		RetPtr(RetPtr const &other) : vcn(other.vcn), cluster_count(other.cluster_count), lcn(other.lcn), skip_begin(other.skip_begin.load(atomic_namespace::memory_order_relaxed)) { }
+		RetPtr &operator =(RetPtr const &other)
+		{
+			this->vcn = other.vcn;
+			this->cluster_count = other.cluster_count;
+			this->lcn = other.lcn;
+			this->skip_begin.store(other.skip_begin.load(atomic_namespace::memory_order_relaxed));
+			return *this;
+		}
+	};
+	typedef std::vector<RetPtr> RetPtrs;
+	typedef std::vector<unsigned char> Bitmap;
 	Handle iocp;
 	HWND m_hWnd;
 	Handle closing_event;
@@ -2070,7 +2088,8 @@ class OverlappedNtfsMftReadPayload : public Overlapped
 	unsigned int cluster_size;
 	unsigned long long read_block_size;
 	atomic_namespace::atomic<RetPtrs::size_type> jbitmap, nbitmap_chunks_left, jdata;
-	atomic_namespace::atomic<unsigned int> records_so_far, valid_records;
+	atomic_namespace::atomic<unsigned int> valid_records;
+	Bitmap mft_bitmap;  // may be unavailable -- don't fail in that case!
 	boost::intrusive_ptr<NtfsIndex volatile> p;
 public:
 	class ReadOperation;
@@ -2078,7 +2097,7 @@ public:
 	{
 	}
 	OverlappedNtfsMftReadPayload(Handle const &iocp, boost::intrusive_ptr<NtfsIndex volatile> p, HWND const m_hWnd, Handle const &closing_event)
-		: Overlapped(), iocp(iocp), m_hWnd(m_hWnd), closing_event(closing_event), records_so_far(0), valid_records(0), cluster_size(), read_block_size(2ULL << 20), jbitmap(0), nbitmap_chunks_left(0), jdata(0)
+		: Overlapped(), iocp(iocp), m_hWnd(m_hWnd), closing_event(closing_event), valid_records(0), cluster_size(), read_block_size(2ULL << 20), jbitmap(0), nbitmap_chunks_left(0), jdata(0)
 	{
 		using std::swap; swap(p, this->p);
 	}
@@ -2087,7 +2106,7 @@ public:
 };
 class OverlappedNtfsMftReadPayload::ReadOperation : public Overlapped
 {
-	unsigned long long _voffset;
+	unsigned long long _voffset, _skipped_begin;
 	static mutex recycled_mutex;
 	static std::vector<std::pair<size_t, void *> > recycled;
 	bool _is_bitmap;
@@ -2095,7 +2114,7 @@ class OverlappedNtfsMftReadPayload::ReadOperation : public Overlapped
 	static void *operator new(size_t n)
 	{
 		void *p;
-		if (false)
+		if (true)
 		{
 			{
 				lock_guard<mutex> guard(recycled_mutex);
@@ -2129,7 +2148,7 @@ public:
 	static void *operator new(size_t n, size_t m) { return operator new(n + m); }
 	static void operator delete(void *p)
 	{
-		if (false)
+		if (true)
 		{
 			lock_guard<mutex>(recycled_mutex), recycled.push_back(std::pair<size_t, void *>(_msize(p), p));
 		}
@@ -2140,9 +2159,11 @@ public:
 	}
 	static void operator delete(void *p, size_t /*m*/) { return operator delete(p); }
 	explicit ReadOperation(boost::intrusive_ptr<OverlappedNtfsMftReadPayload volatile> const &q, bool const is_bitmap)
-		: Overlapped(), _voffset(), q(q), _is_bitmap(is_bitmap) { }
+		: Overlapped(), _voffset(), _skipped_begin(), q(q), _is_bitmap(is_bitmap) { }
 	unsigned long long voffset() { return this->_voffset; }
 	void voffset(unsigned long long const value) { this->_voffset = value; }
+	unsigned long long skipped_begin() { return this->_skipped_begin; }
+	void skipped_begin(unsigned long long const value) { this->_skipped_begin = value; }
 	int operator()(size_t const size, uintptr_t const /*key*/)
 	{
 		OverlappedNtfsMftReadPayload *const q = const_cast<OverlappedNtfsMftReadPayload *>(static_cast<OverlappedNtfsMftReadPayload volatile *>(this->q.get()));
@@ -2152,28 +2173,60 @@ public:
 			void *const buffer = this + 1;
 			if (this->_is_bitmap)
 			{
-				static unsigned char const popcount [] = { 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4 };
-				unsigned int nrecords = 0;
-				for (size_t i = 0, n = size * CHAR_BIT < q->p->mft_capacity ? size : 1 + (q->p->mft_capacity - 1) / CHAR_BIT; i < n; ++i)
+				size_t const records_per_bitmap_word = sizeof(*q->mft_bitmap.begin()) * CHAR_BIT;
+				if (this->voffset() * CHAR_BIT <= q->p->mft_capacity)
 				{
-					unsigned char const
-						v = static_cast<unsigned char const *>(buffer)[i],
-						vlow = static_cast<unsigned char>(v >> (CHAR_BIT / 2)),
-						vhigh = static_cast<unsigned char>(v ^ (vlow << (CHAR_BIT / 2)));
-					nrecords += popcount[vlow];
-					nrecords += popcount[vhigh];
+					static unsigned char const popcount [] = { 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4 };
+					unsigned int nrecords = 0;
+					size_t n = size;
+					if (this->voffset() + n >= q->p->mft_capacity / CHAR_BIT)
+					{
+						n = q->p->mft_capacity / CHAR_BIT - this->voffset();
+					}
+					for (size_t i = 0; i < n; ++i)
+					{
+						unsigned char const
+							v = static_cast<unsigned char const *>(buffer)[i],
+							vlow = static_cast<unsigned char>(v >> (CHAR_BIT / 2)),
+							vhigh = static_cast<unsigned char>(v ^ (vlow << (CHAR_BIT / 2)));
+						nrecords += popcount[vlow];
+						nrecords += popcount[vhigh];
+					}
+					std::copy(static_cast<unsigned char const *>(buffer), static_cast<unsigned char const *>(buffer) + static_cast<ptrdiff_t>(n), q->mft_bitmap.begin() + static_cast<ptrdiff_t>(this->voffset()));
+					q->valid_records.fetch_add(nrecords, atomic_namespace::memory_order_acq_rel);
 				}
-				q->valid_records.fetch_add(nrecords, atomic_namespace::memory_order_acq_rel);
-				q->nbitmap_chunks_left.fetch_sub(1, atomic_namespace::memory_order_acq_rel);
-			}
-			else
-			{
-				if (!q->nbitmap_chunks_left.load(atomic_namespace::memory_order_acquire))  // 'nbitmap_chunks_left' is to make sure we've finished reading the entire bitmap, even with concurrent reads
+				if (q->nbitmap_chunks_left.fetch_sub(1, atomic_namespace::memory_order_acq_rel) == 1)
 				{
 					unsigned int const valid_records = q->valid_records.exchange(0 /* make sure this doesn't happen twice */, atomic_namespace::memory_order_acq_rel);
 					q->p->reserve(valid_records);
+
+					// Now, go remove records from the queue that we know are invalid...
+					for (RetPtrs::iterator i = q->data_ret_ptrs.begin(); i != q->data_ret_ptrs.end(); ++i)
+					{
+						size_t const
+							irecord = static_cast<size_t>(i->vcn * q->cluster_size / q->p->mft_record_size),
+							nrecords = static_cast<size_t>(i->cluster_count * q->cluster_size / q->p->mft_record_size);
+						long long const logical_offset = i->lcn * static_cast<long long>(q->cluster_size);
+						size_t skip_records;
+						for (skip_records = 0; skip_records != nrecords; ++skip_records)
+						{
+							// TODO: We're doing a bitmap search bit-by-bit here, which is slow...
+							// maybe improve it at some point... but OTOH it's still much faster than I/O anyway, so whatever...
+							size_t const j = irecord + skip_records, j1 = j / records_per_bitmap_word, j2 = j % records_per_bitmap_word;
+							if (q->mft_bitmap[j1] & (1 << j2))
+							{
+								break;
+							}
+						}
+						size_t skip_clusters = static_cast<size_t>(static_cast<unsigned long long>(skip_records) * q->p->mft_record_size / q->cluster_size);
+						if (skip_clusters > i->cluster_count) { throw std::logic_error("we should never be skipping more clusters than there are"); }
+						i->skip_begin.store(skip_clusters, atomic_namespace::memory_order_release);
+					}
 				}
-				q->p->load(this->voffset(), buffer, size);
+			}
+			else
+			{
+				q->p->load(this->voffset(), buffer, size, this->skipped_begin());
 			}
 		}
 		return -1;
@@ -2193,12 +2246,15 @@ bool OverlappedNtfsMftReadPayload::queue_next() volatile
 		if (jbitmap < me->bitmap_ret_ptrs.size())
 		{
 			handled = true;
-			unsigned int const cb = static_cast<unsigned int>(me->bitmap_ret_ptrs[jdata].first.second * me->cluster_size);
+			RetPtrs::const_iterator const j = me->bitmap_ret_ptrs.begin() + static_cast<ptrdiff_t>(jbitmap);
+			unsigned long long const skip_begin = j->skip_begin.load(atomic_namespace::memory_order_acquire);
+			unsigned int const cb = static_cast<unsigned int>((j->cluster_count - skip_begin) * me->cluster_size);
 			boost::intrusive_ptr<ReadOperation> p(new(cb) ReadOperation(this, true));
-			p->offset(me->bitmap_ret_ptrs[jdata].second * static_cast<long long>(me->cluster_size));
-			p->voffset(me->bitmap_ret_ptrs[jdata].first.first * me->cluster_size);
+			p-> offset((j->lcn + skip_begin) * static_cast<long long>(me->cluster_size));
+			p->voffset((j->vcn + skip_begin) * me->cluster_size);
+			p->skipped_begin(skip_begin * me->cluster_size);
 			void *const buffer = p.get() + 1;
-			if (ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
+			if (!cb || ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
 			{
 				if (PostQueuedCompletionStatus(me->iocp, cb, 0, p.get()))
 				{
@@ -2225,12 +2281,15 @@ bool OverlappedNtfsMftReadPayload::queue_next() volatile
 		if (jdata < me->data_ret_ptrs.size())
 		{
 			handled = true;
-			unsigned int const cb = static_cast<unsigned int>(me->data_ret_ptrs[jdata].first.second * me->cluster_size);
+			RetPtrs::const_iterator const j = me->data_ret_ptrs.begin() + static_cast<ptrdiff_t>(jdata);
+			unsigned long long const skip_begin = j->skip_begin.load(atomic_namespace::memory_order_acquire);
+			unsigned int const cb = static_cast<unsigned int>((j->cluster_count - skip_begin) * me->cluster_size);
 			boost::intrusive_ptr<ReadOperation> p(new(cb) ReadOperation(this, false));
-			p->offset(me->data_ret_ptrs[jdata].second * static_cast<long long>(me->cluster_size));
-			p->voffset(me->data_ret_ptrs[jdata].first.first * me->cluster_size);
+			p-> offset((j->lcn + skip_begin) * static_cast<long long>(me->cluster_size));
+			p->voffset((j->vcn + skip_begin) * me->cluster_size);
+			p->skipped_begin(skip_begin * me->cluster_size);
 			void *const buffer = p.get() + 1;
-			if (ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
+			if (!cb || ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
 			{
 				if (PostQueuedCompletionStatus(me->iocp, cb, 0, p.get()))
 				{
@@ -2284,10 +2343,11 @@ int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t co
 				for (long long m = 0; m < clusters_left; m += static_cast<long long>(n))
 				{
 					n = std::min(i->first - prev_vcn, 1 + (static_cast<unsigned long long>(this->read_block_size) - 1) / this->cluster_size);
-					this->bitmap_ret_ptrs.push_back(RetPtrs::value_type(RetPtrs::value_type::first_type(prev_vcn, n), i->second + m));
+					this->bitmap_ret_ptrs.push_back(RetPtrs::value_type(prev_vcn, n, i->second + m));
 					prev_vcn += n;
 				}
 			}
+			this->mft_bitmap.resize(static_cast<size_t>(llsize), static_cast<Bitmap::value_type>(~Bitmap::value_type()) /* default should be to read unused slots too */);
 			this->nbitmap_chunks_left.store(this->bitmap_ret_ptrs.size(), atomic_namespace::memory_order_release);
 		}
 #endif
@@ -2302,7 +2362,7 @@ int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t co
 				for (long long m = 0; m < clusters_left; m += static_cast<long long>(n))
 				{
 					n = std::min(i->first - prev_vcn, 1 + (static_cast<unsigned long long>(this->read_block_size) - 1) / this->cluster_size);
-					this->data_ret_ptrs.push_back(RetPtrs::value_type(RetPtrs::value_type::first_type(prev_vcn, n), i->second + m));
+					this->data_ret_ptrs.push_back(RetPtrs::value_type(prev_vcn, n, i->second + m));
 					prev_vcn += n;
 				}
 			}
