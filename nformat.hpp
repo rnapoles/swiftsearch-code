@@ -20,21 +20,13 @@ std::locale get_numpunct_locale(std::locale const &loc)
 	return result;
 }
 
-template<class T>
-std::basic_string<TCHAR> nformat(T v, std::locale const &loc, bool is_numpunct_locale)
+class NumberFormatter
 {
-	std::basic_ostringstream<TCHAR> ss;
-	ss.imbue(is_numpunct_locale ? loc : get_numpunct_locale(loc));
-	ss << v;
-	return ss.str();
-}
-
-#if defined(_MSC_VER) && !defined(_WIN64) && (!defined(_CPPLIB_VER) || _CPPLIB_VER < 403)
-template<class V>
-std::basic_string<TCHAR> nformat64(V v, std::locale const &loc, bool is_numpunct_locale)
-{
-	struct SS : public std::basic_ostringstream<TCHAR>
+	std::basic_string<TCHAR> result;
+	struct SS : public std::basic_stringstream<TCHAR>
 	{
+		typedef std::basic_stringstream<char_type, traits_type> base_type;
+#if defined(_MSC_VER) && !defined(_WIN64) && (!defined(_CPPLIB_VER) || _CPPLIB_VER < 403)
 		struct NumPunctFacet : public _Nput
 		{
 			typedef TCHAR _E;
@@ -70,15 +62,16 @@ std::basic_string<TCHAR> nformat64(V v, std::locale const &loc, bool is_numpunct
 				return (_Iput(_F, _X, _Fill, _Buf, sprintf(_Buf, _Ifmt(_Fmt, "I64llu", _X.flags()), _V)));
 			}
 		};
-		SS &operator <<(V _X)
+		template<class V>
+		SS &custom_leftshift(V _X)
 		{
 			iostate _St = goodbit;
-			const sentry _Ok(*this);
+			const std::basic_ostringstream<TCHAR>::sentry _Ok(*this);
 			if (_Ok)
 			{
 				const _Nput& _Fac = _USE(getloc(), _Nput);
 				_TRY_IO_BEGIN
-					if (static_cast<NumPunctFacet const &>(_Fac).do_put(_Iter(rdbuf()), *this, fill(), _X).failed())
+					if (static_cast<NumPunctFacet const &>(_Fac).do_put(std::basic_ostringstream<TCHAR>::_Iter(rdbuf()), *this, fill(), _X).failed())
 					{
 						_St |= badbit;
 					}
@@ -87,19 +80,50 @@ std::basic_string<TCHAR> nformat64(V v, std::locale const &loc, bool is_numpunct
 			setstate(_St);
 			return *this;
 		}
-	} ss;
-	ss.imbue(is_numpunct_locale ? loc : get_numpunct_locale(loc));
-	ss << v;
-	return ss.str();
-}
-
-template<>
-std::basic_string<TCHAR> nformat<         long long>(         long long v, std::locale const &loc, bool is_numpunct_locale)
-{ return nformat64(v, loc, is_numpunct_locale); }
-
-template<>
-std::basic_string<TCHAR> nformat<unsigned long long>(unsigned long long v, std::locale const &loc, bool is_numpunct_locale)
-{ return nformat64(v, loc, is_numpunct_locale); }
+		using std::basic_ostringstream<TCHAR>::operator<<;
+		SS &operator <<(long long x) { return this->custom_leftshift(x); }
+		SS &operator <<(unsigned long long x) { return this->custom_leftshift(x); }
 #endif
+};
+	SS ss;
+	bool ascii;
+public:
+	NumberFormatter() : ascii(true) { }
+	explicit NumberFormatter(std::locale const &loc) : ascii(false) { this->ss.imbue(loc); }
+	
+	template<class V>
+	static void format_fast_ascii_append(std::basic_string<TCHAR> &result, V value, size_t const min_width)
+	{
+		size_t const n = result.size();
+		V const radix = 10;
+		for (size_t i = 0; value != 0 || i < min_width; ++i)
+		{
+			V rem = static_cast<V>(value % radix);
+			while (rem < 0) { rem += radix; }
+			result += static_cast<TCHAR>(_T('0') + rem);
+			value /= radix;
+		}
+		std::reverse(result.begin() + static_cast<ptrdiff_t>(n), result.end());
+	}
+
+	template<class T>
+	std::basic_string<TCHAR> const &operator()(T v)
+	{
+		if (this->ascii)
+		{
+			result.erase(result.begin(), result.end());
+			this->format_fast_ascii_append<T>(result, v, 0);
+		}
+		else
+		{
+			ss.str(std::basic_string<TCHAR>());
+			ss.clear();
+			ss << v;
+			ss.seekg(0);
+			ss >> result;
+		}
+		return result;
+	}
+};
 
 #endif

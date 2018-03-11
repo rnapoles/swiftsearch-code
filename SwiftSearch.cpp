@@ -36,6 +36,7 @@ namespace WTL { using std::min; using std::max; }
 #include <atlmisc.h>
 extern WTL::CAppModule _Module;
 #include <atlwin.h>
+#include <atldlgs.h>
 #include <atlframe.h>
 #include <atlctrls.h>
 #include <atlctrlx.h>
@@ -90,6 +91,15 @@ namespace std
 	template<class T> struct is_pod { static bool const value = __is_pod(T); };
 #endif
 }
+
+struct File
+{
+	FILE *f;
+	~File() { if (f) { fclose(f); } }
+	operator FILE *&() { return this->f; }
+	operator FILE *() const { return this->f; }
+	FILE **operator &() { return &this->f; }
+};
 
 class mutex
 {
@@ -310,6 +320,7 @@ namespace winnt
 	struct FILE_FS_SIZE_INFORMATION { long long TotalAllocationUnits, ActualAvailableAllocationUnits; unsigned long SectorsPerAllocationUnit, BytesPerSector; };
 	struct FILE_FS_ATTRIBUTE_INFORMATION { unsigned long FileSystemAttributes; unsigned long MaximumComponentNameLength; unsigned long FileSystemNameLength; wchar_t FileSystemName[1]; };
 	union FILE_IO_PRIORITY_HINT_INFORMATION { IO_PRIORITY_HINT PriorityHint; unsigned long long _alignment; };
+	struct SYSTEM_TIMEOFDAY_INFORMATION { LARGE_INTEGER BootTime; LARGE_INTEGER CurrentTime; LARGE_INTEGER TimeZoneBias; ULONG TimeZoneId; ULONG Reserved; };
 
 	template<class T> struct identity { typedef T type; };
 	typedef long NTSTATUS;
@@ -322,6 +333,7 @@ namespace winnt
 	X(RtlInitUnicodeString, VOID NTAPI(UNICODE_STRING * DestinationString, PCWSTR SourceString));
 	X(RtlNtStatusToDosError, unsigned long NTAPI(IN NTSTATUS NtStatus));
 	X(RtlSystemTimeToLocalTime, NTSTATUS NTAPI(IN LARGE_INTEGER const *SystemTime, OUT PLARGE_INTEGER LocalTime));
+	X(NtQuerySystemInformation, NTSTATUS NTAPI(IN enum _SYSTEM_INFORMATION_CLASS SystemInfoClass, OUT PVOID SystemInfoBuffer, IN ULONG SystemInfoBufferSize, OUT PULONG BytesReturned OPTIONAL));
 #undef  X
 }
 
@@ -334,24 +346,36 @@ LONGLONG RtlSystemTimeToLocalTime(LONGLONG systemTime)
 	return localTime.QuadPart;
 }
 
-LPCTSTR SystemTimeToString(LONGLONG systemTime, LPTSTR buffer, size_t cchBuffer, LPCTSTR dateFormat = NULL, LPCTSTR timeFormat = NULL, LCID lcid = GetThreadLocale())
+void LocalTimeToString(LONGLONG time, std::tstring &buffer, bool const sortable, LCID lcid = GetThreadLocale())
 {
-	LONGLONG time = RtlSystemTimeToLocalTime(systemTime);
 	SYSTEMTIME sysTime = { 0 };
 	if (FileTimeToSystemTime(&reinterpret_cast<FILETIME &>(time), &sysTime))
 	{
-		size_t const cchDate = static_cast<size_t>(GetDateFormat(lcid, 0, &sysTime, dateFormat, &buffer[0], static_cast<int>(cchBuffer)));
-		if (cchDate > 0)
+		if (sortable)
 		{
-			// cchDate INCLUDES null-terminator
-			buffer[cchDate - 1] = _T(' ');
-			size_t const cchTime = static_cast<size_t>(GetTimeFormat(lcid, 0, &sysTime, timeFormat, &buffer[cchDate], static_cast<int>(cchBuffer - cchDate)));
-			buffer[cchDate + cchTime - 1] = _T('\0');
+			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wYear  , 4); buffer += _T('-');
+			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wMonth , 2); buffer += _T('-');
+			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wDay   , 2); buffer += _T(' ');
+			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wHour  , 2); buffer += _T(':');
+			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wMinute, 2); buffer += _T(':');
+			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wSecond, 2);
 		}
-		else { memset(&buffer[0], 0, sizeof(buffer[0]) * cchBuffer); }
+		else
+		{
+			buffer.resize(64);
+			size_t cch = 0;
+			size_t const cchDate = static_cast<size_t>(GetDateFormat(lcid, 0, &sysTime, NULL, &buffer[0], static_cast<int>(buffer.size())));
+			cch += cchDate;
+			if (cchDate > 0)
+			{
+				// cchDate INCLUDES null-terminator
+				buffer[cchDate - 1] = _T(' ');
+				size_t const cchTime = static_cast<size_t>(GetTimeFormat(lcid, 0, &sysTime, NULL, &buffer[cchDate], static_cast<int>(buffer.size() - cchDate)));
+				cch += cchTime;
+			}
+			buffer.resize(cch);
+		}
 	}
-	else { *buffer = _T('\0'); }
-	return buffer;
 }
 
 namespace ntfs
@@ -844,6 +868,19 @@ static struct negative_one
 	operator T() const { return static_cast<T>(~T()); }
 } const negative_one;
 
+template<class T>
+struct initialized
+{
+	typedef initialized this_type, type;
+	T value;
+	initialized() : value() { }
+	initialized(T const &value) : value(value) { }
+	operator T &() { return this->value; }
+	operator T const &() const { return this->value; }
+	operator T volatile &() volatile { return this->value; }
+	operator T const volatile &() const volatile { return this->value; }
+};
+
 template<size_t V>
 class constant
 {
@@ -957,6 +994,8 @@ private:
 	}
 };
 
+typedef std::pair<unsigned long long, clock_t> Speed;
+
 class NtfsIndex : public RefCounted<NtfsIndex>
 {
 	typedef NtfsIndex this_type;
@@ -981,6 +1020,7 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	struct SizeInfo
 	{
 		file_size_type length, allocated, bulkiness;
+		initialized<unsigned int>::type descendents;
 	};
 	friend struct std::is_scalar<StandardInfo>;
 	struct NameInfo
@@ -1050,6 +1090,8 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	unsigned int _expected_records;
 	atomic_namespace::atomic<bool> _cancelled;
 	atomic_namespace::atomic<unsigned int> _records_so_far;
+	std::vector<Speed> _perf_reports_circ /* circular buffer */; size_t _perf_reports_begin;
+	Speed _perf_avg_speed;
 #pragma pack(push, 1)
 	struct key_type_internal
 	{
@@ -1114,7 +1156,7 @@ public:
 	typedef SizeInfo size_info;
 	unsigned int mft_record_size;
 	unsigned int mft_capacity;
-	NtfsIndex(std::tstring value) : _init_called(), _failed(), _root_path(value), _finished_event(CreateEvent(NULL, TRUE, FALSE, NULL)), _total_names_and_streams(), _records_so_far(0), _expected_records(0), _cancelled(false), mft_record_size(), mft_capacity()
+	NtfsIndex(std::tstring value) : _init_called(), _failed(), _root_path(value), _finished_event(CreateEvent(NULL, TRUE, FALSE, NULL)), _total_names_and_streams(), _records_so_far(0), _perf_reports_circ(1 << 6), _perf_reports_begin(), _expected_records(0), _cancelled(false), mft_record_size(), mft_capacity()
 	{
 	}
 	~NtfsIndex()
@@ -1178,6 +1220,18 @@ public:
 	size_t records_so_far() const { return this->_records_so_far.load(atomic_namespace::memory_order_relaxed); }
 	void *volume() const volatile { return this->_volume.value; }
 	mutex &get_mutex() const volatile { return this->unvolatile()->_mutex; }
+	Speed speed() const
+	{
+		Speed total;
+		total = this->_perf_avg_speed;
+		return total;
+	}
+	Speed speed() const volatile
+	{
+		this_type const *const me = this->unvolatile();
+		lock_guard<mutex> const lock(me->_mutex);
+		return me->speed();
+	}
 	std::tstring const &root_path() const { return this->_root_path; }
 	std::tstring const &root_path() const volatile
 	{
@@ -1218,16 +1272,18 @@ public:
 		{
 			struct
 			{
+				typedef SizeInfo PreprocessResult;
 				NtfsIndex *me;
-				std::vector<unsigned long long> scratch;
-				std::pair<std::pair<file_size_type, file_size_type>, file_size_type> operator()(key_type::frs_type const frs, key_type::name_info_type const name_info, unsigned short const total_names)
+				typedef std::vector<unsigned long long> Scratch;
+				Scratch scratch;
+				PreprocessResult operator()(key_type::frs_type const frs, key_type::name_info_type const name_info, unsigned short const total_names)
 				{
 					size_t const old_scratch_size = scratch.size();
-					std::pair<std::pair<file_size_type, file_size_type>, file_size_type> result;
+					PreprocessResult result;
 					if (frs < me->records_lookup.size())
 					{
 						Records::value_type *const fr = me->find(frs);
-						std::pair<std::pair<file_size_type, file_size_type>, file_size_type> children_size;
+						PreprocessResult children_size;
 						for (ChildInfos::value_type *i = me->childinfo(fr); i && ~i->record_number; i = me->childinfo(i->next_entry))
 						{
 							Records::value_type *const fr2 = me->find(i->record_number);
@@ -1239,34 +1295,39 @@ public:
 								{
 									if (static_cast<unsigned int>(i->record_number) != frs)  /* root directory is the only one that is a child of itself */
 									{
-										std::pair<std::pair<file_size_type, file_size_type>, file_size_type> const
+										PreprocessResult const
 											subresult = this->operator()(static_cast<unsigned int>(i->record_number), ji, jn);
-										scratch.push_back(subresult.second);
-										children_size.first.first += subresult.first.first;
-										children_size.first.second += subresult.first.second;
-										children_size.second += subresult.second;
+										scratch.push_back(subresult.bulkiness);
+										children_size.length += subresult.length;
+										children_size.allocated += subresult.allocated;
+										children_size.bulkiness += subresult.bulkiness;
+										children_size.descendents += subresult.descendents;
 									}
 								}
 							}
 						}
-						std::sort(scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size), scratch.end());
-						unsigned long long const threshold = children_size.first.second / 100;
-						while (scratch.size() > old_scratch_size && scratch.back() >= threshold)
+						std::make_heap(scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size), scratch.end());
+						unsigned long long const threshold = children_size.allocated / 100;
+						for (Scratch::iterator i = scratch.end(); i != scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size); )
 						{
-							children_size.second = children_size.second - scratch.back();
-							scratch.pop_back();
+							std::pop_heap(scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size), i);
+							--i;
+							if (*i < threshold) { break; }
+							children_size.bulkiness = children_size.bulkiness - *i;
 						}
 						result = children_size;
 						for (StreamInfos::value_type *k = me->streaminfo(fr); k; k = me->streaminfo(k->next_entry))
 						{
-							result.first.first += k->length * (name_info + 1) / total_names - k->length * name_info / total_names;
-							result.first.second += k->allocated * (name_info + 1) / total_names - k->allocated * name_info / total_names;
-							result.second += k->bulkiness * (name_info + 1) / total_names - k->bulkiness * name_info / total_names;
+							result.length += k->length * (name_info + 1) / total_names - k->length * name_info / total_names;
+							result.allocated += k->allocated * (name_info + 1) / total_names - k->allocated * name_info / total_names;
+							result.bulkiness += k->bulkiness * (name_info + 1) / total_names - k->bulkiness * name_info / total_names;
+							result.descendents += 1;
 							if (!k->type_name_id)
 							{
-								k->length += children_size.first.first;
-								k->allocated += children_size.first.second;
-								k->bulkiness += children_size.second;
+								k->length += children_size.length;
+								k->allocated += children_size.allocated;
+								k->bulkiness += children_size.bulkiness;
+								k->descendents += children_size.descendents;
 							}
 						}
 					}
@@ -1305,18 +1366,18 @@ public:
 		}
 		catch (std::bad_alloc &) { }
 	}
-	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, unsigned long long const skipped_begin) volatile
+	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, unsigned long long const skipped_begin, unsigned long long const skipped_end) volatile
 	{
 		this_type *const me = this->unvolatile();
 		lock_guard<mutex> const lock(me->_mutex);
 		// TODO: This lock prevents parallelism. Instead, add the entries to a private queue locally, then transfer them in bulk.
-		me->load(virtual_offset, buffer, size, skipped_begin);
+		me->load(virtual_offset, buffer, size, skipped_begin, skipped_end);
 	}
-	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, unsigned long long const skipped_begin)
+	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, unsigned long long const skipped_begin, unsigned long long const skipped_end)
 	{
 		if (size % this->mft_record_size)
 		{ throw std::runtime_error("Cluster size is smaller than MFT record size; split MFT records (over multiple clusters) not supported. Defragmenting your MFT may sometimes avoid this condition."); }
-		if (skipped_begin) { this->_records_so_far.fetch_add(static_cast<unsigned int>(skipped_begin / this->mft_record_size)); }
+		if (skipped_begin || skipped_end) { this->_records_so_far.fetch_add(static_cast<unsigned int>((skipped_begin + skipped_end) / this->mft_record_size)); }
 		for (size_t i = virtual_offset % this->mft_record_size ? this->mft_record_size - virtual_offset % this->mft_record_size : 0; i + this->mft_record_size <= size; i += this->mft_record_size, this->_records_so_far.fetch_add(1, atomic_namespace::memory_order_acq_rel))
 		{
 			unsigned int const frs = static_cast<unsigned int>((virtual_offset + i) / this->mft_record_size);
@@ -1371,6 +1432,9 @@ public:
 						break;
 					// case ntfs::AttributeAttributeList:
 					// case ntfs::AttributeLoggedUtilityStream:
+					case ntfs::AttributeObjectId:
+					// case ntfs::AttributeSecurityDescriptor:
+					case ntfs::AttributePropertySet:
 					case ntfs::AttributeBitmap:
 					case ntfs::AttributeIndexAllocation:
 					case ntfs::AttributeIndexRoot:
@@ -1402,6 +1466,7 @@ public:
 								info.length = ah->IsNonResident ? static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... */ : ah->NonResident.DataSize) : ah->Resident.ValueLength;
 								info.allocated = ah->IsNonResident ? ah->NonResident.CompressionUnit ? static_cast<file_size_type>(ah->NonResident.CompressedSize) : static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... should be looking at VCNs */ : ah->NonResident.AllocatedSize) : 0;
 								info.bulkiness = info.allocated;
+								info.descendents = 0;
 								if (StreamInfos::value_type *const si = this->streaminfo(&*base_record))
 								{
 									size_t const stream_index = this->streaminfos.size();
@@ -1421,6 +1486,22 @@ public:
 			}
 		}
 		this->check_finished();
+	}
+
+	void report_speed(unsigned long long const size, clock_t const duration)
+	{
+		this->_perf_avg_speed.first += size;
+		this->_perf_avg_speed.second += duration;
+		Speed const prev = this->_perf_reports_circ[this->_perf_reports_begin];
+		this->_perf_reports_circ[this->_perf_reports_begin] = std::make_pair(size, duration);
+		this->_perf_reports_begin = (this->_perf_reports_begin + 1) % this->_perf_reports_circ.size();
+	}
+
+	void report_speed(unsigned long long const size, clock_t const duration) volatile
+	{
+		this_type *const me = this->unvolatile();
+		lock_guard<mutex> const lock(me->_mutex);
+		return me->report_speed(size, duration);
 	}
 
 	size_t get_path(key_type key, std::tstring &result, bool const name_only) const volatile
@@ -1556,14 +1637,14 @@ private:
 		{
 			bool const buffered_matching = stream_prefix_size || match_paths || match_streams;
 			std::tstring const empty_string;
-			if (frs < me->records_lookup.size())
+			if (frs < me->records_lookup.size() && (frs == 0x00000005 || frs >= 0x00000010))
 			{
 				size_t const islot = me->records_lookup[frs];
 				Records::value_type const * const fr = me->find(frs);
 				unsigned short ii = 0;
 				for (ChildInfos::value_type const *i = me->childinfo(fr); i && ~i->record_number; i = me->childinfo(i->next_entry), ++ii)
 				{
-					Records::value_type const * const fr2 = me->find(i->record_number);
+					Records::value_type const *const fr2 = me->find(i->record_number);
 					unsigned short const jn = fr2->name_count;
 					unsigned short ji = 0;
 					for (LinkInfos::value_type const *j = me->nameinfo(fr2); j; j = me->nameinfo(j->next_entry), ++ji)
@@ -1844,7 +1925,7 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 	DWORD creationTime;
 	DWORD lastUpdateTime;
 	HWND parent;
-	std::basic_string<TCHAR> lastProgressText, lastProgressTitle;
+	std::tstring lastProgressText, lastProgressTitle;
 	bool windowCreated;
 	bool windowCreateAttempted;
 	int lastProgress, lastProgressTotal;
@@ -1949,7 +2030,7 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 	}
 
 public:
-	enum { UPDATE_INTERVAL = 25 };
+	enum { UPDATE_INTERVAL = 1000 / 60 };
 	CProgressDialog(ATL::CWindow parent)
 		: Base(true), parent(parent), lastUpdateTime(0), creationTime(GetTickCount()), lastProgress(0), lastProgressTotal(1), invalidated(false), canceled(false), windowCreated(false), windowCreateAttempted(false)
 	{
@@ -2067,15 +2148,16 @@ class OverlappedNtfsMftReadPayload : public Overlapped
 	{
 		unsigned long long vcn, cluster_count;
 		long long lcn;
-		atomic_namespace::atomic<unsigned long long> skip_begin;
-		RetPtr(unsigned long long const vcn, unsigned long long const cluster_count, unsigned long long const lcn) : vcn(vcn), cluster_count(cluster_count), lcn(lcn), skip_begin(0) { }
-		RetPtr(RetPtr const &other) : vcn(other.vcn), cluster_count(other.cluster_count), lcn(other.lcn), skip_begin(other.skip_begin.load(atomic_namespace::memory_order_relaxed)) { }
+		atomic_namespace::atomic<unsigned long long> skip_begin, skip_end;
+		RetPtr(unsigned long long const vcn, unsigned long long const cluster_count, unsigned long long const lcn) : vcn(vcn), cluster_count(cluster_count), lcn(lcn), skip_begin(0), skip_end(0) { }
+		RetPtr(RetPtr const &other) : vcn(other.vcn), cluster_count(other.cluster_count), lcn(other.lcn), skip_begin(other.skip_begin.load(atomic_namespace::memory_order_relaxed)), skip_end(other.skip_end.load(atomic_namespace::memory_order_relaxed)) { }
 		RetPtr &operator =(RetPtr const &other)
 		{
 			this->vcn = other.vcn;
 			this->cluster_count = other.cluster_count;
 			this->lcn = other.lcn;
 			this->skip_begin.store(other.skip_begin.load(atomic_namespace::memory_order_relaxed));
+			this->skip_end.store(other.skip_end.load(atomic_namespace::memory_order_relaxed));
 			return *this;
 		}
 	};
@@ -2097,7 +2179,7 @@ public:
 	{
 	}
 	OverlappedNtfsMftReadPayload(Handle const &iocp, boost::intrusive_ptr<NtfsIndex volatile> p, HWND const m_hWnd, Handle const &closing_event)
-		: Overlapped(), iocp(iocp), m_hWnd(m_hWnd), closing_event(closing_event), valid_records(0), cluster_size(), read_block_size(2ULL << 20), jbitmap(0), nbitmap_chunks_left(0), jdata(0)
+		: Overlapped(), iocp(iocp), m_hWnd(m_hWnd), closing_event(closing_event), valid_records(0), cluster_size(), read_block_size(1 << 20), jbitmap(0), nbitmap_chunks_left(0), jdata(0)
 	{
 		using std::swap; swap(p, this->p);
 	}
@@ -2106,7 +2188,8 @@ public:
 };
 class OverlappedNtfsMftReadPayload::ReadOperation : public Overlapped
 {
-	unsigned long long _voffset, _skipped_begin;
+	unsigned long long _voffset, _skipped_begin, _skipped_end;
+	clock_t _time;
 	static mutex recycled_mutex;
 	static std::vector<std::pair<size_t, void *> > recycled;
 	bool _is_bitmap;
@@ -2159,11 +2242,15 @@ public:
 	}
 	static void operator delete(void *p, size_t /*m*/) { return operator delete(p); }
 	explicit ReadOperation(boost::intrusive_ptr<OverlappedNtfsMftReadPayload volatile> const &q, bool const is_bitmap)
-		: Overlapped(), _voffset(), _skipped_begin(), q(q), _is_bitmap(is_bitmap) { }
+		: Overlapped(), _voffset(), _skipped_begin(), _skipped_end(), _time(begin_time), q(q), _is_bitmap(is_bitmap) { }
 	unsigned long long voffset() { return this->_voffset; }
 	void voffset(unsigned long long const value) { this->_voffset = value; }
 	unsigned long long skipped_begin() { return this->_skipped_begin; }
 	void skipped_begin(unsigned long long const value) { this->_skipped_begin = value; }
+	unsigned long long skipped_end() { return this->_skipped_end; }
+	void skipped_end(unsigned long long const value) { this->_skipped_end = value; }
+	clock_t time() { return this->_time; }
+	void time(clock_t const value) { this->_time = value; }
 	int operator()(size_t const size, uintptr_t const /*key*/)
 	{
 		OverlappedNtfsMftReadPayload *const q = const_cast<OverlappedNtfsMftReadPayload *>(static_cast<OverlappedNtfsMftReadPayload volatile *>(this->q.get()));
@@ -2206,27 +2293,35 @@ public:
 						size_t const
 							irecord = static_cast<size_t>(i->vcn * q->cluster_size / q->p->mft_record_size),
 							nrecords = static_cast<size_t>(i->cluster_count * q->cluster_size / q->p->mft_record_size);
-						long long const logical_offset = i->lcn * static_cast<long long>(q->cluster_size);
-						size_t skip_records;
-						for (skip_records = 0; skip_records != nrecords; ++skip_records)
+						size_t skip_records_begin, skip_records_end;
+						// TODO: We're doing a bitmap search bit-by-bit here, which is slow...
+						// maybe improve it at some point... but OTOH it's still much faster than I/O anyway, so whatever...
+						for (skip_records_begin = 0; skip_records_begin != nrecords; ++skip_records_begin)
 						{
-							// TODO: We're doing a bitmap search bit-by-bit here, which is slow...
-							// maybe improve it at some point... but OTOH it's still much faster than I/O anyway, so whatever...
-							size_t const j = irecord + skip_records, j1 = j / records_per_bitmap_word, j2 = j % records_per_bitmap_word;
-							if (q->mft_bitmap[j1] & (1 << j2))
-							{
-								break;
-							}
+							size_t const j = irecord + skip_records_begin, j1 = j / records_per_bitmap_word, j2 = j % records_per_bitmap_word;
+							if (q->mft_bitmap[j1] & (1 << j2)) { break; }
 						}
-						size_t skip_clusters = static_cast<size_t>(static_cast<unsigned long long>(skip_records) * q->p->mft_record_size / q->cluster_size);
-						if (skip_clusters > i->cluster_count) { throw std::logic_error("we should never be skipping more clusters than there are"); }
-						i->skip_begin.store(skip_clusters, atomic_namespace::memory_order_release);
+						for (skip_records_end = 0; skip_records_end != nrecords - skip_records_begin; ++skip_records_end)
+						{
+							size_t const j = irecord + nrecords - 1 - skip_records_end, j1 = j / records_per_bitmap_word, j2 = j % records_per_bitmap_word;
+							if (q->mft_bitmap[j1] & (1 << j2)) { break; }
+							skip_records_end = skip_records_end;
+						}
+						size_t
+							skip_clusters_begin = static_cast<size_t>(static_cast<unsigned long long>(skip_records_begin) * q->p->mft_record_size / q->cluster_size),
+							skip_clusters_end = static_cast<size_t>(static_cast<unsigned long long>(skip_records_end) * q->p->mft_record_size / q->cluster_size);
+						if (skip_clusters_begin + skip_clusters_end > i->cluster_count) { throw std::logic_error("we should never be skipping more clusters than there are"); }
+						i->skip_begin.store(skip_clusters_begin, atomic_namespace::memory_order_release);
+						i->skip_end.store(skip_clusters_end, atomic_namespace::memory_order_release);
 					}
 				}
 			}
 			else
 			{
-				q->p->load(this->voffset(), buffer, size, this->skipped_begin());
+				q->p->load(this->voffset(), buffer, size, this->skipped_begin(), this->skipped_end());
+			}
+			{
+				q->p->report_speed(size, clock() - begin_time - this->time());
 			}
 		}
 		return -1;
@@ -2247,12 +2342,16 @@ bool OverlappedNtfsMftReadPayload::queue_next() volatile
 		{
 			handled = true;
 			RetPtrs::const_iterator const j = me->bitmap_ret_ptrs.begin() + static_cast<ptrdiff_t>(jbitmap);
-			unsigned long long const skip_begin = j->skip_begin.load(atomic_namespace::memory_order_acquire);
-			unsigned int const cb = static_cast<unsigned int>((j->cluster_count - skip_begin) * me->cluster_size);
+			unsigned long long const
+				skip_begin = j->skip_begin.load(atomic_namespace::memory_order_acquire),
+				skip_end = j->skip_end.load(atomic_namespace::memory_order_acquire);
+			unsigned int const cb = static_cast<unsigned int>((j->cluster_count - (skip_begin + skip_end)) * me->cluster_size);
 			boost::intrusive_ptr<ReadOperation> p(new(cb) ReadOperation(this, true));
 			p-> offset((j->lcn + skip_begin) * static_cast<long long>(me->cluster_size));
 			p->voffset((j->vcn + skip_begin) * me->cluster_size);
 			p->skipped_begin(skip_begin * me->cluster_size);
+			p->skipped_end(skip_end * me->cluster_size);
+			p->time(clock() - begin_time);
 			void *const buffer = p.get() + 1;
 			if (!cb || ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
 			{
@@ -2282,12 +2381,16 @@ bool OverlappedNtfsMftReadPayload::queue_next() volatile
 		{
 			handled = true;
 			RetPtrs::const_iterator const j = me->data_ret_ptrs.begin() + static_cast<ptrdiff_t>(jdata);
-			unsigned long long const skip_begin = j->skip_begin.load(atomic_namespace::memory_order_acquire);
-			unsigned int const cb = static_cast<unsigned int>((j->cluster_count - skip_begin) * me->cluster_size);
+			unsigned long long const
+				skip_begin = j->skip_begin.load(atomic_namespace::memory_order_acquire),
+				skip_end = j->skip_end.load(atomic_namespace::memory_order_acquire);
+			unsigned int const cb = static_cast<unsigned int>((j->cluster_count - (skip_begin + skip_end)) * me->cluster_size);
 			boost::intrusive_ptr<ReadOperation> p(new(cb) ReadOperation(this, false));
 			p-> offset((j->lcn + skip_begin) * static_cast<long long>(me->cluster_size));
 			p->voffset((j->vcn + skip_begin) * me->cluster_size);
 			p->skipped_begin(skip_begin * me->cluster_size);
+			p->skipped_end(skip_end * me->cluster_size);
+			p->time(clock() - begin_time);
 			void *const buffer = p.get() + 1;
 			if (!cb || ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
 			{
@@ -2328,7 +2431,7 @@ int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t co
 		CheckAndThrow(DeviceIoControl(volume, FSCTL_GET_NTFS_VOLUME_DATA, NULL, 0, &info, sizeof(info), &br, NULL));
 		this->cluster_size = static_cast<unsigned int>(info.BytesPerCluster);
 		p->mft_record_size = info.BytesPerFileRecordSegment;
-		p->mft_capacity = static_cast<unsigned int>(info.MftValidDataLength.QuadPart / p->mft_record_size);
+		p->mft_capacity = static_cast<unsigned int>(info.MftValidDataLength.QuadPart / info.BytesPerFileRecordSegment);
 		CheckAndThrow(!!CreateIoCompletionPort(volume, this->iocp, reinterpret_cast<uintptr_t>(&*p), 0));
 		typedef std::vector<std::pair<unsigned long long, long long> > RP;
 #if 1
@@ -2395,7 +2498,7 @@ struct SearchResult
 class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize<CMainDlg>, public CInvokeImpl<CMainDlg>, private WTL::CMessageFilter
 {
 	enum { IDC_STATUS_BAR = 1100 + 0 };
-	enum { COLUMN_INDEX_NAME, COLUMN_INDEX_PATH, COLUMN_INDEX_SIZE, COLUMN_INDEX_SIZE_ON_DISK, COLUMN_INDEX_CREATION_TIME, COLUMN_INDEX_MODIFICATION_TIME, COLUMN_INDEX_ACCESS_TIME };
+	enum { COLUMN_INDEX_NAME, COLUMN_INDEX_PATH, COLUMN_INDEX_SIZE, COLUMN_INDEX_SIZE_ON_DISK, COLUMN_INDEX_CREATION_TIME, COLUMN_INDEX_MODIFICATION_TIME, COLUMN_INDEX_ACCESS_TIME, COLUMN_INDEX_DESCENDENTS };
 #ifndef LVN_INCREMENTALSEARCH
 	enum
 	{
@@ -2734,6 +2837,7 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	std::tstring lastRequestedIcon;
 	HANDLE hRichEdit;
 	bool autocomplete_called;
+	std::pair<int /* column */, unsigned int /* counter */> last_sort;
 	Results results;
 	WTL::CImageList _small_image_list;  // image list that is used as the "small" image list
 	WTL::CImageList imgListSmall, imgListLarge, imgListExtraLarge;  // lists of small images
@@ -2745,7 +2849,8 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	Handle closing_event;
 	Handle iocp;
 	Threads threads;
-	std::locale loc;
+	NumberFormatter nformat_ui, nformat_io;
+	long long time_zone_bias;
 	HANDLE hWait, hEvent;
 	CoInit coinit;
 	COLORREF deletedColor;
@@ -2774,11 +2879,21 @@ public:
 	CMainDlg(HANDLE const hEvent) :
 		num_threads(static_cast<size_t>(get_num_threads())), indices_created(),
 		closing_event(CreateEvent(NULL, TRUE, FALSE, NULL)), iocp(CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0)),
-		threads(), loc(get_numpunct_locale(std::locale(""))), hWait(), hEvent(hEvent),
+		threads(), nformat_ui(get_numpunct_locale(std::locale(""))), nformat_io(), time_zone_bias(), hWait(), hEvent(hEvent),
 		iconLoader(BackgroundWorker::create(true)), lastRequestedIcon(), hRichEdit(), autocomplete_called(false), _small_image_list(),
 		deletedColor(RGB(0xFF, 0, 0)), encryptedColor(RGB(0, 0xFF, 0)), compressedColor(RGB(0, 0, 0xFF))
 	{
+		winnt::SYSTEM_TIMEOFDAY_INFORMATION info = {};
+		unsigned long nb;
+		winnt::NtQuerySystemInformation(static_cast<enum winnt::_SYSTEM_INFORMATION_CLASS>(3), &info, sizeof(info), &nb);
+		this->time_zone_bias = info.TimeZoneBias.QuadPart;
 	}
+
+	long long SystemTimeToLocalTime(long long system_time) const
+	{
+		return system_time - this->time_zone_bias;
+	}
+
 	void OnDestroy()
 	{
 		UnregisterWait(this->hWait);
@@ -2980,14 +3095,14 @@ public:
 		this->txtPattern.EnsureTrackingMouseHover();
 		this->txtPattern.SetCueBannerText(_T("Search by name or path (hover for help)"), true);
 		WTL::CHeaderCtrl hdr = this->lvFiles.GetHeader();
-		// COLUMN_INDEX_NAME, COLUMN_INDEX_PATH, COLUMN_INDEX_SIZE, COLUMN_INDEX_SIZE_ON_DISK, COLUMN_INDEX_CREATION_TIME, COLUMN_INDEX_MODIFICATION_TIME, COLUMN_INDEX_ACCESS_TIME
-		{ int const icol = COLUMN_INDEX_NAME; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT, 200, _T("Name") }; this->lvFiles.InsertColumn(icol, &column); HDITEM hditem = { HDI_LPARAM }; hditem.lParam = 0; hdr.SetItem(icol, &hditem); }
-		{ int const icol = COLUMN_INDEX_PATH; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT, 340, _T("Path") }; this->lvFiles.InsertColumn(icol, &column); HDITEM hditem = { HDI_LPARAM }; hditem.lParam = 0; hdr.SetItem(icol, &hditem); }
-		{ int const icol = COLUMN_INDEX_SIZE; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT, 105, _T("Size") }; this->lvFiles.InsertColumn(icol, &column); HDITEM hditem = { HDI_LPARAM }; hditem.lParam = 0; hdr.SetItem(icol, &hditem); }
-		{ int const icol = COLUMN_INDEX_SIZE_ON_DISK; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT, 105, _T("Size on Disk") }; this->lvFiles.InsertColumn(icol, &column); HDITEM hditem = { HDI_LPARAM }; hditem.lParam = 0; hdr.SetItem(icol, &hditem); }
-		{ int const icol = COLUMN_INDEX_CREATION_TIME; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT, 80, _T("Created") }; this->lvFiles.InsertColumn(icol, &column); HDITEM hditem = { HDI_LPARAM }; hditem.lParam = 0; hdr.SetItem(icol, &hditem); }
-		{ int const icol = COLUMN_INDEX_MODIFICATION_TIME; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT, 80, _T("Written") }; this->lvFiles.InsertColumn(icol, &column); HDITEM hditem = { HDI_LPARAM }; hditem.lParam = 0; hdr.SetItem(icol, &hditem); }
-		{ int const icol = COLUMN_INDEX_ACCESS_TIME; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT, 80, _T("Accessed") }; this->lvFiles.InsertColumn(icol, &column); HDITEM hditem = { HDI_LPARAM }; hditem.lParam = 0; hdr.SetItem(icol, &hditem); }
+		{ int const icol = COLUMN_INDEX_NAME             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT , 200, _T("Name")         }; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_PATH             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT , 340, _T("Path")         }; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_SIZE             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT, 105, _T("Size")         }; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_SIZE_ON_DISK     ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT, 105, _T("Size on Disk") }; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_CREATION_TIME    ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  80, _T("Created")      }; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_MODIFICATION_TIME; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  80, _T("Written")      }; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_ACCESS_TIME      ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  80, _T("Accessed")     }; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_DESCENDENTS      ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT,  74, _T("Descendents")  }; this->lvFiles.InsertColumn(icol, &column); }
 
 		this->cmbDrive.SetCueBannerText(_T("Search where?"));
 		HINSTANCE hInstance = GetModuleHandle(NULL);
@@ -3080,12 +3195,12 @@ public:
 		WTL::CWaitCursor wait;
 		LPNM_LISTVIEW pLV = (LPNM_LISTVIEW)pnmh;
 		WTL::CHeaderCtrl header = this->lvFiles.GetHeader();
-		HDITEM hditem = { HDI_LPARAM };
-		header.GetItem(pLV->iSubItem, &hditem);
 		bool const ctrl_pressed = GetKeyState(VK_CONTROL) < 0;
 		bool const shift_pressed = GetKeyState(VK_SHIFT) < 0;
 		bool const alt_pressed = GetKeyState(VK_MENU) < 0;
 		bool cancelled = false;
+		int const subitem = pLV->iSubItem;
+		bool const reversed = this->last_sort.first == subitem + 1 && this->last_sort.second % 2;
 		if ((this->lvFiles.GetStyle() & LVS_OWNERDATA) != 0)
 		{
 			try
@@ -3108,12 +3223,10 @@ public:
 					1
 #endif
 					);
-				int const subitem = pLV->iSubItem;
-				bool const reversed = ! /* <- due to this->results.base */ !!hditem.lParam;
 				this->results.clear_ordering();
 				inplace_mergesort(this->results.rbegin(), this->results.rend(), [this, subitem, &vnames, reversed, shift_pressed, alt_pressed, ctrl_pressed](Results::value_type const &_a, Results::value_type const &_b)
 				{
-					Results::value_type const &a = reversed ? _b : _a, &b = reversed ? _a : _b;
+					Results::value_type const &a = reversed ? _a : _b, &b = reversed ? _b : _a;
 					std::pair<std::tstring, std::tstring> &names = *(vnames.begin()
 #ifdef _OPENMP
 						+ omp_get_thread_num()
@@ -3172,6 +3285,9 @@ public:
 						case COLUMN_INDEX_ACCESS_TIME:
 							less = index1->get_stdinfo(a.key.frs).accessed > index2->get_stdinfo(b.key.frs).accessed;
 							break;
+						case COLUMN_INDEX_DESCENDENTS:
+							less = index1->get_sizes(a.key).descendents > index2->get_sizes(b.key).descendents;
+							break;
 						default: less = false; break;
 						}
 					}
@@ -3190,8 +3306,8 @@ public:
 		}
 		if (!cancelled)
 		{
-			hditem.lParam = !hditem.lParam;
-			header.SetItem(pLV->iSubItem, &hditem);
+			this->last_sort.second = this->last_sort.first == subitem + 1 ? this->last_sort.second + 1 : 1;
+			this->last_sort.first = subitem + 1;
 		}
 		return TRUE;
 	}
@@ -3202,6 +3318,8 @@ public:
 		this->lastRequestedIcon.resize(0);
 		this->lvFiles.SetItemCount(0);
 		this->results.clear();
+		this->last_sort.first = 0;
+		this->last_sort.second = 0;
 	}
 
 	void Search()
@@ -3260,7 +3378,7 @@ public:
 		if (!is_path_pattern && !~pattern.find(_T('*')) && !~pattern.find(_T('?'))) { pattern.insert(pattern.begin(), _T('*')); pattern.insert(pattern.end(), _T('*')); }
 		clock_t const start = clock();
 		std::vector<uintptr_t> wait_handles;
-		std::vector<Results::value_type::first_type> wait_indices;
+		std::vector<Results::value_type::first_type> wait_indices, initial_wait_indices;
 		// TODO: What if they exceed maximum wait objects?
 		bool any_io_pending = false;
 		size_t expected_results = 0;
@@ -3282,11 +3400,14 @@ public:
 				}
 			}
 		}
+		initial_wait_indices = wait_indices;
 		if (!any_io_pending) { overall_progress_denominator /= 2; }
 		if (any_io_pending) { dlg.ForceShow(); }
 		try { this->results.reserve(this->results.size() + expected_results + expected_results / 8); }
 		catch (std::bad_alloc &) { }
 		RaiseIoPriority set_priority;
+		Speed::second_type initial_time = Speed::second_type();
+		Speed::first_type initial_average_amount = Speed::first_type();
 		while (!dlg.HasUserCancelled() && !wait_handles.empty())
 		{
 			if (uintptr_t const volume = reinterpret_cast<uintptr_t>(wait_indices.at(0)->volume()))
@@ -3300,7 +3421,7 @@ public:
 				if (dlg.ShouldUpdate())
 				{
 					std::basic_ostringstream<TCHAR> ss;
-					ss << _T("Reading file tables...");
+					ss << _T("Reading file tables...") << _T(" ");
 					bool any = false;
 					size_t temp_overall_progress_numerator = overall_progress_numerator;
 					for (size_t i = 0; i != wait_indices.size(); ++i)
@@ -3312,9 +3433,40 @@ public:
 						{
 							if (any) { ss << _T(", "); }
 							else { ss << _T(" "); }
-							ss << j->root_path() << _T(" ") << _T("(") << nformat(records_so_far, this->loc, true) << _T(" of ") << nformat(j->mft_capacity, this->loc, true) << _T(")");
+							ss << j->root_path() << _T(" ") << _T("(") << nformat_ui(records_so_far);
+							ss << _T(" of ");
+							// These MUST be separate statements since nformat_ui is used twice
+							ss << nformat_ui(j->mft_capacity) << _T(")");
 							any = true;
 						}
+					}
+					bool const initial_speed = !initial_average_amount;
+					Speed recent_speed, average_speed;
+					for (size_t i = 0; i != initial_wait_indices.size(); ++i)
+					{
+						Results::value_type::first_type const j = initial_wait_indices[i];
+						{
+							Speed const speed = j->speed();
+							average_speed.first += speed.first;
+							average_speed.second += speed.second;
+							if (initial_speed)
+							{
+								initial_average_amount += speed.first;
+							}
+						}
+					}
+					clock_t const tnow = clock() - begin_time;
+					if (initial_speed)
+					{
+						initial_time = tnow;
+					}
+					if (average_speed.first > initial_average_amount)
+					{
+						ss << std::endl;
+						ss << _T("Average speed: ") << nformat_ui(static_cast<size_t>((average_speed.first - initial_average_amount) * static_cast<double>(CLOCKS_PER_SEC) / ((tnow - initial_time) * (1ULL << 20)))) << _T(" MiB/s");
+						ss << _T(" ");
+						// These MUST be separate statements since nformat_ui is used twice
+						ss << _T("(") << nformat_ui(average_speed.first / (1 << 20)) << _T(" MiB read)");
 					}
 					std::tstring const text = ss.str();
 					dlg.SetProgressText(boost::iterator_range<TCHAR const *>(text.data(), text.data() + text.size()));
@@ -3362,8 +3514,8 @@ public:
 								std::tstring text(0x100 + root_path.size() + static_cast<ptrdiff_t>(path.second - path.first), _T('\0'));
 								text.resize(static_cast<size_t>(_stprintf(&*text.begin(), _T("Searching %.*s (%s of %s)...\r\n%.*s"),
 									static_cast<int>(root_path.size()), root_path.c_str(),
-									nformat(current_progress_numerator, this->loc, true).c_str(),
-									nformat(current_progress_denominator, this->loc, true).c_str(),
+									static_cast<std::tstring>(nformat_ui(current_progress_numerator)).c_str(),
+									static_cast<std::tstring>(nformat_ui(current_progress_denominator)).c_str(),
 									static_cast<int>(path.second - path.first), path.first == path.second ? NULL : &*path.first)));
 								dlg.SetProgressText(boost::iterator_range<TCHAR const *>(text.data(), text.data() + text.size()));
 								dlg.SetProgress(temp_overall_progress_numerator + static_cast<unsigned long long>(i->mft_capacity) * static_cast<unsigned long long>(current_progress_numerator) / static_cast<unsigned long long>(current_progress_denominator), static_cast<long long>(overall_progress_denominator));
@@ -3421,7 +3573,7 @@ public:
 		}
 		clock_t const end = clock();
 		TCHAR buf[0x100];
-		_stprintf(buf, _T("%s results in %.2lf seconds"), nformat(this->results.size(), this->loc, true).c_str(), (end - start) * 1.0 / CLOCKS_PER_SEC);
+		_stprintf(buf, _T("%s results in %.2lf seconds"), nformat_ui(this->results.size()).c_str(), (end - start) * 1.0 / CLOCKS_PER_SEC);
 		this->statusbar.SetText(0, buf);
 	}
 
@@ -3467,24 +3619,40 @@ public:
 		}
 	}
 
+	void append_selected_indices(std::vector<size_t> &result) const
+	{
+		WNDPROC const lvFiles_wndproc = reinterpret_cast<WNDPROC>(::GetWindowLongPtr(this->lvFiles.m_hWnd, GWLP_WNDPROC));
+		for (int i = -1;;)
+		{
+			i = static_cast<int>(lvFiles_wndproc(this->lvFiles.m_hWnd, LVM_GETNEXTITEM, i, MAKELPARAM(LVNI_SELECTED, 0)));
+			// i = this->lvFiles.GetNextItem(i, LVNI_SELECTED);
+			if (i < 0) { break; }
+			result.push_back(static_cast<size_t>(i));
+		}
+	}
+
 	LRESULT OnContextMenu(UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
+		WTL::CWaitCursor wait;
 		(void)uMsg;
 		LRESULT result = 0;
 		POINT point = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
 		if ((HWND)wParam == this->lvFiles)
 		{
-			std::vector<int> indices;
+			std::vector<size_t> indices;
 			int index;
 			if (point.x == -1 && point.y == -1)
 			{
 				index = this->lvFiles.GetSelectedIndex();
-				RECT bounds = { };
-				this->lvFiles.GetItemRect(index, &bounds, LVIR_SELECTBOUNDS);
-				this->lvFiles.ClientToScreen(&bounds);
-				point.x = bounds.left;
-				point.y = bounds.top;
-				indices.push_back(index);
+				if (index >= 0)
+				{
+					RECT bounds = {};
+					this->lvFiles.GetItemRect(index, &bounds, LVIR_SELECTBOUNDS);
+					this->lvFiles.ClientToScreen(&bounds);
+					point.x = bounds.left;
+					point.y = bounds.top;
+					indices.push_back(static_cast<size_t>(index));
+				}
 			}
 			else
 			{
@@ -3493,13 +3661,7 @@ public:
 				index = this->lvFiles.HitTest(clientPoint, 0);
 				if (index >= 0)
 				{
-					int i = -1;
-					for (;;)
-					{
-						i = this->lvFiles.GetNextItem(i, LVNI_SELECTED);
-						if (i < 0) { break; }
-						indices.push_back(i);
-					}
+					this->append_selected_indices(indices);
 				}
 			}
 			int const focused = this->lvFiles.GetNextItem(-1, LVNI_FOCUSED);
@@ -3511,13 +3673,33 @@ public:
 		return result;
 	}
 
-	void RightClick(std::vector<int> const &indices, POINT const &point, int const focused)
+	void RightClick(std::vector<size_t> const &indices, POINT const &point, int const focused)
 	{
+		std::vector<lock_guard<mutex> > indices_locks;  // this is to permit us to call unvolatile() below
+		indices_locks.reserve(static_cast<size_t>(this->cmbDrive.GetCount()));  // ensure we don't copy lock_guard's
 		std::vector<Results::value_type const *> results;
 		for (size_t i = 0; i < indices.size(); ++i)
 		{
-			if (indices[i] < 0) { continue; }
-			results.push_back(&this->results[indices[i]]);
+			Results::value_type const *const result = &this->results[indices[i]];
+			// TODO: This code block is duplicated
+			{
+				mutex *const m = &result->index->get_mutex();
+				bool found_lock = false;
+				for (size_t j = 0; j != indices_locks.size(); ++j)
+				{
+					if (indices_locks[j].p == m)
+					{
+						found_lock = true;
+						break;
+					}
+				}
+				if (!found_lock)
+				{
+					indices_locks.push_back(lock_guard<mutex>());
+					lock_guard<mutex>(m).swap(indices_locks.back());
+				}
+			}
+			results.push_back(result);
 		}
 		HRESULT volatile hr = S_OK;
 		UINT const minID = 1000;
@@ -3527,85 +3709,90 @@ public:
 		std::auto_ptr<std::pair<std::pair<CShellItemIDList, ATL::CComPtr<IShellFolder> >, std::vector<CShellItemIDList> > > p(
 			new std::pair<std::pair<CShellItemIDList, ATL::CComPtr<IShellFolder> >, std::vector<CShellItemIDList> >());
 		p->second.reserve(results.size());  // REQUIRED, to avoid copying CShellItemIDList objects (they're not copyable!)
-		SFGAOF sfgao = 0;
-		std::tstring common_ancestor_path;
-		for (size_t i = 0; i < results.size(); ++i)
+		if (results.size() <= (1 << 10))  // if not too many files... otherwise the shell context menu this will take a long time
 		{
-			Results::value_type const &row = *results[i];
-			Results::value_type::first_type const &index = row.index;
-			std::tstring path = index->root_path();
-			if (index->get_path(row.key, path, false))
+			SFGAOF sfgao = 0;
+			std::tstring common_ancestor_path;
+			std::tstring path;
+			for (size_t i = 0; i < results.size(); ++i)
 			{
-				remove_path_stream_and_trailing_sep(path);
-			}
-			if (i == 0)
-			{
-				common_ancestor_path = path;
-			}
-			CShellItemIDList itemIdList;
-			if (SHParseDisplayName(path.c_str(), NULL, &itemIdList, sfgao, &sfgao) == S_OK)
-			{
-				p->second.push_back(CShellItemIDList());
-				p->second.back().Attach(itemIdList.Detach());
-				if (i != 0)
+				Results::value_type const &row = *results[i];
+				NtfsIndex const *const index = row.index->unvolatile() /* we are allowed to do this because the indices are locked */;
+				path = index->root_path();
+				if (index->get_path(row.key, path, false))
+				{
+					remove_path_stream_and_trailing_sep(path);
+				}
+				if (i == 0)
 				{
 					common_ancestor_path = path;
-					size_t j;
-					for (j = 0; j < (path.size() < common_ancestor_path.size() ? path.size() : common_ancestor_path.size()); j++)
+				}
+				CShellItemIDList itemIdList;
+				if (SHParseDisplayName(path.c_str(), NULL, &itemIdList, sfgao, &sfgao) == S_OK)
+				{
+					p->second.push_back(CShellItemIDList());
+					p->second.back().Attach(itemIdList.Detach());
+					if (i != 0)
 					{
-						if (path[j] != common_ancestor_path[j])
+						common_ancestor_path = path;
+						size_t j;
+						for (j = 0; j < (path.size() < common_ancestor_path.size() ? path.size() : common_ancestor_path.size()); j++)
 						{
-							break;
+							if (path[j] != common_ancestor_path[j])
+							{
+								break;
+							}
 						}
+						common_ancestor_path.erase(common_ancestor_path.begin() + static_cast<ptrdiff_t>(j), common_ancestor_path.end());
 					}
-					common_ancestor_path.erase(common_ancestor_path.begin() + static_cast<ptrdiff_t>(j), common_ancestor_path.end());
 				}
 			}
-		}
-		common_ancestor_path.erase(dirname(common_ancestor_path.begin(), common_ancestor_path.end()), common_ancestor_path.end());
-		if (hr == S_OK)
-		{
-			hr = SHParseDisplayName(common_ancestor_path.c_str(), NULL, &p->first.first, sfgao, &sfgao);
-		}
-		if (hr == S_OK)
-		{
-			ATL::CComPtr<IShellFolder> desktop;
-			hr = SHGetDesktopFolder(&desktop);
+			common_ancestor_path.erase(dirname(common_ancestor_path.begin(), common_ancestor_path.end()), common_ancestor_path.end());
 			if (hr == S_OK)
 			{
-				if (p->first.first.m_pidl->mkid.cb)
-				{
-					hr = desktop->BindToObject(p->first.first, NULL, IID_IShellFolder, reinterpret_cast<void **>(&p->first.second));
-				}
-				else
-				{
-					hr = desktop.QueryInterface(&p->first.second);
-				}
+				hr = SHParseDisplayName(common_ancestor_path.c_str(), NULL, &p->first.first, sfgao, &sfgao);
 			}
-		}
-
-		if (hr == S_OK)
-		{
-			std::vector<LPCITEMIDLIST> relative_item_ids(p->second.size());
-			for (size_t i = 0; i < p->second.size(); ++i)
+			if (hr == S_OK)
 			{
-				relative_item_ids[i] = ILFindChild(p->first.first, p->second[i]);
+				ATL::CComPtr<IShellFolder> desktop;
+				hr = SHGetDesktopFolder(&desktop);
+				if (hr == S_OK)
+				{
+					if (p->first.first.m_pidl->mkid.cb)
+					{
+						hr = desktop->BindToObject(p->first.first, NULL, IID_IShellFolder, reinterpret_cast<void **>(&p->first.second));
+					}
+					else
+					{
+						hr = desktop.QueryInterface(&p->first.second);
+					}
+				}
 			}
-			hr = p->first.second->GetUIObjectOf(
-				*this,
-				static_cast<UINT>(relative_item_ids.size()),
-				relative_item_ids.empty() ? NULL : &relative_item_ids[0],
-				IID_IContextMenu,
-				NULL,
-				&reinterpret_cast<void *&>(contextMenu.p));
+			if (hr == S_OK)
+			{
+				std::vector<LPCITEMIDLIST> relative_item_ids(p->second.size());
+				for (size_t i = 0; i < p->second.size(); ++i)
+				{
+					relative_item_ids[i] = ILFindChild(p->first.first, p->second[i]);
+				}
+				hr = p->first.second->GetUIObjectOf(
+					*this,
+					static_cast<UINT>(relative_item_ids.size()),
+					relative_item_ids.empty() ? NULL : &relative_item_ids[0],
+					IID_IContextMenu,
+					NULL,
+					&reinterpret_cast<void *&>(contextMenu.p));
+			}
+			if (hr == S_OK)
+			{
+				hr = contextMenu->QueryContextMenu(menu, 0, minID, UINT_MAX, 0x80 /*CMF_ITEMMENU*/);
+			}
 		}
-		if (hr == S_OK)
-		{
-			hr = contextMenu->QueryContextMenu(menu, 0, minID, UINT_MAX, 0x80 /*CMF_ITEMMENU*/);
-		}
-
 		unsigned int ninserted = 0;
-		UINT const openContainingFolderId = minID - 1;
+		UINT const
+			openContainingFolderId = minID - 1,
+			fileIdId = minID - 2,
+			dumpId = minID - 3;
 
 		if (results.size() == 1)
 		{
@@ -3616,14 +3803,15 @@ public:
 		}
 		if (0 <= focused && static_cast<size_t>(focused) < this->results.size())
 		{
-			std::basic_stringstream<TCHAR> ssName;
-			ssName.imbue(this->loc);
-			ssName << _T("File #") << this->results[static_cast<size_t>(focused)].key.frs;
-			std::tstring name = ssName.str();
-			if (!name.empty())
 			{
-				MENUITEMINFO mii1 = { sizeof(mii1), MIIM_ID | MIIM_STRING | MIIM_STATE, MFT_STRING, MFS_DISABLED, minID - 2, NULL, NULL, NULL, NULL, (name.c_str(), &name[0]) };
-				menu.InsertMenuItem(ninserted++, TRUE, &mii1);
+				std::tstring name = _T("File #") + nformat_ui(this->results[static_cast<size_t>(focused)].key.frs);
+				MENUITEMINFO mii = { sizeof(mii), MIIM_ID | MIIM_STRING | MIIM_STATE, MFT_STRING, MFS_DISABLED, fileIdId, NULL, NULL, NULL, NULL, (name.c_str(), name.empty() ? NULL : &name[0]) };
+				menu.InsertMenuItem(ninserted++, TRUE, &mii);
+			}
+			{
+				std::tstring name = _T("Dump to table...");
+				MENUITEMINFO mii = { sizeof(mii), MIIM_ID | MIIM_STRING | MIIM_STATE, MFT_STRING, 0, dumpId, NULL, NULL, NULL, NULL, (name.c_str(), name.empty() ? NULL : &name[0]) };
+				menu.InsertMenuItem(ninserted++, TRUE, &mii);
 			}
 		}
 		if (contextMenu && ninserted)
@@ -3644,6 +3832,69 @@ public:
 			if (QueueUserWorkItem(&SHOpenFolderAndSelectItemsThread, p.get(), WT_EXECUTEINUITHREAD))
 			{
 				p.release();
+			}
+		}
+		else if (id == dumpId)
+		{
+			WTL::CFileDialog dlg(FALSE, _T("csv"), NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, _T("Comma-separated values [UTF-8] (*.csv)\0*.csv\0Tab-separated values [UTF-8] (*.tsv)\0*.tsv\0\0"));
+			dlg.m_ofn.lpfnHook = NULL;
+			dlg.m_ofn.Flags &= ~OFN_ENABLEHOOK;
+			dlg.m_ofn.lpstrTitle = _T("Save Table");
+			if (GetSaveFileName(&dlg.m_ofn))
+			{
+				typedef tchar_ci_traits char_traits;
+				std::tstring const fileext = dlg.m_ofn.nFileExtension ? &dlg.m_ofn.lpstrFile[dlg.m_ofn.nFileExtension] : _T("");
+				bool const tabsep = fileext.size() == 3 && char_traits::compare(fileext.data(), _T("tsv"), fileext.size()) == 0;
+				WTL::CWaitCursor wait;
+				int const ncolumns = this->lvFiles.GetHeader().GetItemCount();
+				File const output = { _tfopen(dlg.m_ofn.lpstrFile, _T("wb")) };
+				if (output)
+				{
+					std::string line_buffer_utf8;
+					std::tstring line_buffer, text_buffer;
+					for (size_t i = 0; i < results.size(); ++i)
+					{
+						line_buffer.erase(line_buffer.begin(), line_buffer.end());
+						Results::value_type const &row = *results[i];
+						bool any = false;
+						for (int j = 0; j < ncolumns; ++j)
+						{
+							if (j == COLUMN_INDEX_NAME) { continue; }
+							text_buffer.erase(text_buffer.begin(), text_buffer.end());
+							this->GetSubItemText(row, j, false, text_buffer, false);
+							if (any) { line_buffer += tabsep ? _T('\t') : _T(','); }
+							// NOTE: We assume there are no double-quotes here, so we don't handle escaping for that! This is a valid assumption for this program.
+							if (tabsep)
+							{
+								if (text_buffer.find(_T('\t')) != std::tstring::npos)
+								{
+									text_buffer.insert(text_buffer.begin(), 1, _T('\"'));
+									text_buffer.insert(text_buffer.end(), 1, _T('\"'));
+								}
+							}
+							else
+							{
+								if (text_buffer.find(_T(',')) != std::tstring::npos ||
+									text_buffer.find(_T('\'')) != std::tstring::npos)
+								{
+									text_buffer.insert(text_buffer.begin(), 1, _T('\"'));
+									text_buffer.insert(text_buffer.end(), 1, _T('\"'));
+								}
+							}
+							line_buffer += text_buffer;
+							any = true;
+						}
+						line_buffer += _T('\r');
+						line_buffer += _T('\n');
+#if defined(_UNICODE) &&_UNICODE
+						line_buffer_utf8.resize((line_buffer.size() + 1) * 6, _T('\0'));
+						line_buffer_utf8.resize(WideCharToMultiByte(CP_UTF8, 0, line_buffer.empty() ? NULL : &line_buffer[0], static_cast<int>(line_buffer.size()), &line_buffer_utf8[0], static_cast<int>(line_buffer_utf8.size()), NULL, NULL));
+						fwrite(line_buffer_utf8.data(), sizeof(*line_buffer_utf8.data()), line_buffer_utf8.size(), output);
+#else
+						fwrite(line_buffer.data(), sizeof(*line_buffer.data()), line_buffer.size(), output);
+#endif
+					}
+				}
 			}
 		}
 		else if (id >= minID)
@@ -3748,27 +3999,31 @@ public:
 	}
 
 	template<class Index>
-	void GetSubItemText_impl(Index *const i, Results::value_type::second_type const key, int const subitem, std::tstring &text, bool const lock_index = true) const
+	void GetSubItemText_impl(Index *const i, Results::value_type::second_type const key, int const subitem, bool const for_ui, std::tstring &text, bool const lock_index = true)
 	{
 		text.erase(text.begin(), text.end());
+		NumberFormatter &nformat = for_ui ? nformat_ui : nformat_io;
+		long long svalue;
+		unsigned long long uvalue;
 		switch (subitem)
 		{
-		case COLUMN_INDEX_NAME: i->get_path(key, text, true); deldirsep(text); break;
-		case COLUMN_INDEX_PATH: text = i->root_path(); i->get_path(key, text, false); break;
-		case COLUMN_INDEX_SIZE: text = nformat(static_cast<unsigned long long>(i->get_sizes(key).length), this->loc, true); break;
-		case COLUMN_INDEX_SIZE_ON_DISK: text = nformat(static_cast<unsigned long long>(i->get_sizes(key).allocated), this->loc, true); break;
-		case COLUMN_INDEX_CREATION_TIME    : text.assign(0x100, _T('\0')); SystemTimeToString(i->get_stdinfo(key.frs).created, &text[0], text.size()); text = std::tstring(text.c_str()); break;
-		case COLUMN_INDEX_MODIFICATION_TIME: text.assign(0x100, _T('\0')); SystemTimeToString(i->get_stdinfo(key.frs).written, &text[0], text.size()); text = std::tstring(text.c_str()); break;
-		case COLUMN_INDEX_ACCESS_TIME      : text.assign(0x100, _T('\0')); SystemTimeToString(i->get_stdinfo(key.frs).accessed, &text[0], text.size()); text = std::tstring(text.c_str()); break;
+		case COLUMN_INDEX_NAME             : i->get_path(key, text, true); deldirsep(text); break;
+		case COLUMN_INDEX_PATH             : text = i->root_path(); i->get_path(key, text, false); break;
+		case COLUMN_INDEX_SIZE             : uvalue = static_cast<unsigned long long>(i->get_sizes(key).length   ); text = nformat(uvalue); break;
+		case COLUMN_INDEX_SIZE_ON_DISK     : uvalue = static_cast<unsigned long long>(i->get_sizes(key).allocated); text = nformat(uvalue); break;
+		case COLUMN_INDEX_CREATION_TIME    : svalue = i->get_stdinfo(key.frs).created ; LocalTimeToString(SystemTimeToLocalTime(svalue), text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
+		case COLUMN_INDEX_MODIFICATION_TIME: svalue = i->get_stdinfo(key.frs).written ; LocalTimeToString(SystemTimeToLocalTime(svalue), text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
+		case COLUMN_INDEX_ACCESS_TIME      : svalue = i->get_stdinfo(key.frs).accessed; LocalTimeToString(SystemTimeToLocalTime(svalue), text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
+		case COLUMN_INDEX_DESCENDENTS      : uvalue = static_cast<unsigned long long>(i->get_sizes(key).descendents); if (uvalue) { text = nformat(uvalue); } else { text.erase(text.begin(), text.end()); } break;
 		default: break;
 		}
 	}
 
-	void GetSubItemText(Results::value_type const &result, int const subitem, std::tstring &text, bool const lock_index = true) const
+	void GetSubItemText(Results::value_type const &result, int const subitem, bool const for_ui, std::tstring &text, bool const lock_index = true)
 	{
 		lock_index
-			? this->GetSubItemText_impl(result.index, result.key, subitem, text)
-			: this->GetSubItemText_impl(const_cast<NtfsIndex const *>(result.index), result.key, subitem, text);
+			? this->GetSubItemText_impl(result.index, result.key, subitem, for_ui, text)
+			: this->GetSubItemText_impl(const_cast<NtfsIndex const *>(result.index), result.key, subitem, for_ui, text);
 	}
 
 	LRESULT OnFilesIncrementalSearch(LPNMHDR pnmh)
@@ -3797,6 +4052,7 @@ public:
 					break;
 				}
 				Results::value_type const &result = this->results[static_cast<size_t>(iItem)];
+				// TODO: This code block is duplicated
 				{
 					mutex *const m = &result.index->get_mutex();
 					bool found_lock = false;
@@ -3814,7 +4070,7 @@ public:
 						lock_guard<mutex>(m).swap(indices_locks.back());
 					}
 				}
-				this->GetSubItemText(result, COLUMN_INDEX_NAME, text, false);
+				this->GetSubItemText(result, COLUMN_INDEX_NAME, true, text, false);
 				bool const match = (pLV->lvfi.flags & (LVFI_PARTIAL | (0x0004 /*LVFI_SUBSTRING*/)))
 					? text.size() >= needle_length && char_traits::compare(text.data(), needle, needle_length) == 0
 					: text.size() == needle_length && char_traits::compare(text.data(), needle, needle_length) == 0;
@@ -3838,8 +4094,8 @@ public:
 			Results::value_type const &result = this->results[static_cast<size_t>(pLV->item.iItem)];
 			Results::value_type::first_type const &i = result.index;
 			std::tstring text, path;
-			this->GetSubItemText(result, pLV->item.iSubItem, text);
-			this->GetSubItemText(result, COLUMN_INDEX_PATH, path);
+			this->GetSubItemText(result, pLV->item.iSubItem, true, text);
+			this->GetSubItemText(result, COLUMN_INDEX_PATH, true, path);
 			if (!text.empty()) { _tcsncpy(pLV->item.pszText, text.c_str(), pLV->item.cchTextMax); }
 			if (pLV->item.iSubItem == 0)
 			{
@@ -3921,7 +4177,7 @@ public:
 				{
 					Results::value_type const &row = this->results[static_cast<size_t>(pLV->nmcd.dwItemSpec)];
 					std::tstring itemText;
-					this->GetSubItemText(row, pLV->iSubItem, itemText);
+					this->GetSubItemText(row, pLV->iSubItem, true, itemText);
 					WTL::CDCHandle dc(pLV->nmcd.hdc);
 					RECT rcTwips = pLV->nmcd.rc;
 					rcTwips.left = (int) ((rcTwips.left + 6) * 1440 / dc.GetDeviceCaps(LOGPIXELSX));
@@ -4374,32 +4630,4 @@ int __stdcall _tWinMain(HINSTANCE const hInstance, HINSTANCE /*hPrevInstance*/, 
 	(void) hInstance;
 	(void) nShowCmd;
 	return _tmain(__argc, __targv);
-}
-
-void pi()
-{
-	typedef long long Int;
-	for (Int l = static_cast<Int>(1) << 23; !(l >> 28); l <<= 1)
-	{
-		Int num = 0, den = 0;
-		clock_t const start = clock();
-// #pragma omp parallel for schedule(static) reduction(+: num, den)
-		for (Int x = 1; x <= l; x += 2)
-		{
-			Int const r = l * l - x * x;
-			Int begin = 1, end = l + 1;
-			while (begin != end)
-			{
-				Int const y = begin + (end - begin) / 2;
-				if (y * y <= r) { begin = y + 1; }
-				else { end = y + 0; }
-			}
-			num += begin / 2;
-			den += (l + 1) / 2;
-		}
-		fprintf(
-			stderr, "[%5u ms] %0.12f\n",
-			static_cast<unsigned int>(clock() - start) * 1000 / CLOCKS_PER_SEC,
-			(4.0 * num / den));
-	}
 }
