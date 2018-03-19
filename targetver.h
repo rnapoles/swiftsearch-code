@@ -23,6 +23,8 @@
 #define NOMINMAX 1
 #define BUILD_WINDOWS 1
 #define BOOST_ALL_NO_LIB 1
+#define BOOST_DISABLE_ASSERTS 1
+#define BOOST_EXCEPTION_DISABLE 1
 
 #ifndef _DEBUG
 #define _SECURE_SCL 0

@@ -1,6 +1,11 @@
-﻿#include <process.h>
+#include "targetver.h"
+
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <tchar.h>
 #include <time.h>
 #include <wchar.h>
@@ -9,6 +14,7 @@
 #endif
 
 #include <algorithm>
+#include <cassert>
 #include <map>
 #include <fstream>
 #include <string>
@@ -55,6 +61,13 @@ extern WTL::CAppModule _Module;
 #define clear() resize(0)
 #include <boost/exception/info.hpp>
 #undef clear
+#include <boost/xpressive/regex_error.hpp>
+#ifdef  BOOST_XPR_ENSURE_
+#undef  BOOST_XPR_ENSURE_
+#define BOOST_XPR_ENSURE_(pred, code, msg) (1)
+#else
+#error  BOOST_XPR_ENSURE_ was not found -- you need to fix this to avoid inserting strings into the binary unnecessarily
+#endif
 #include <boost/xpressive/detail/dynamic/matchable.hpp>
 #define clear() resize(0)
 #define push_back(x) operator +=(x)
@@ -94,12 +107,112 @@ namespace std
 
 struct File
 {
-	FILE *f;
-	~File() { if (f) { fclose(f); } }
-	operator FILE *&() { return this->f; }
-	operator FILE *() const { return this->f; }
-	FILE **operator &() { return &this->f; }
+	typedef int handle_type;
+	handle_type f;
+	~File() { if (f) { _close(f); } }
+	operator handle_type &() { return this->f; }
+	operator handle_type () const { return this->f; }
+	handle_type *operator &() { return &this->f; }
 };
+
+class NtUserCallHook
+{
+	typedef NtUserCallHook this_type;
+	NtUserCallHook(this_type const &);
+	this_type &operator =(this_type const &);
+public:
+	explicit NtUserCallHook(HMODULE const module, char const *const name, FARPROC const new_proc, unsigned char const context_arg)
+	{
+		FARPROC const proc = GetProcAddress(module, name);
+		unsigned char *const proc_buf = reinterpret_cast<unsigned char *const &>(proc);
+#ifdef _WIN64
+		if (context_arg < 4 /* we don't support context arguments that aren't in a register */ &&
+			memcmp(&proc_buf[0], "\x4C\x8B\xD1\xB8", 4) == 0 &&
+			memcmp(&proc_buf[8], "\xF6\x04\x25", 3) == 0 &&
+			memcmp(&proc_buf[16], "\x75\x03\x0F\x05\xC3\xCD\x2E\xC3", 8) == 0)
+		{
+			unsigned int const proc_buf_size = 24;
+			memcpy(this->old_proc, proc_buf, proc_buf_size);
+			DWORD old_protect;
+			if (VirtualProtect(this->old_proc, proc_buf_size, PAGE_EXECUTE_READWRITE, &old_protect) &&
+				VirtualProtect(proc_buf, proc_buf_size, PAGE_EXECUTE_READWRITE, &old_protect))
+			{
+				ptrdiff_t j = 0;
+				proc_buf[j++] = 0x48;
+				proc_buf[j++] = 0xB8;
+				{
+					uintptr_t const arg = reinterpret_cast<uintptr_t>(new_proc);
+					unsigned int i = 0;
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+				}
+				bool has_context = true;
+				switch (context_arg)
+				{
+				case 0: proc_buf[j++] = 0x48; proc_buf[j++] = 0xB9; break;
+				case 1: proc_buf[j++] = 0x48; proc_buf[j++] = 0xBA; break;
+				case 2: proc_buf[j++] = 0x49; proc_buf[j++] = 0xB8; break;
+				case 3: proc_buf[j++] = 0x49; proc_buf[j++] = 0xB9; break;
+				default: has_context = false; break;
+				}
+				if (has_context)
+				{
+					uintptr_t const arg = reinterpret_cast<uintptr_t>(this);
+					unsigned int i = 0;
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
+				}
+				proc_buf[j++] = 0xFF;
+				proc_buf[j++] = 0xE0;
+				VirtualProtect(proc_buf, proc_buf_size, old_protect, &old_protect);
+			}
+		}
+#else
+#endif
+	}
+	unsigned char old_proc[
+#ifdef _WIN64
+		24
+#else
+		1
+#endif
+	];
+};
+
+typedef HANDLE __stdcall NtUserGetProp_t(HWND hWnd, ATOM PropId);
+typedef HANDLE __stdcall NtUserGetProp_with_context_t(HWND hWnd, ATOM PropId, NtUserGetProp_t *const old_proc);
+__declspec(thread) static NtUserGetProp_with_context_t *NtUserGetProp_thread = NULL;
+
+typedef BOOL __stdcall NtUserSetProp_t(HWND hWnd, ATOM PropId, HANDLE value);
+typedef BOOL __stdcall NtUserSetProp_with_context_t(HWND hWnd, ATOM PropId, HANDLE value, NtUserSetProp_t *const old_proc);
+__declspec(thread) static NtUserSetProp_with_context_t *NtUserSetProp_thread = NULL;
+
+HANDLE __stdcall NtUserGetProp(HWND hWnd, ATOM PropId, NtUserCallHook *const context)
+{
+	NtUserGetProp_t *const old_proc = reinterpret_cast<NtUserGetProp_t *>(&context->old_proc[0]);
+	return NtUserGetProp_thread ? NtUserGetProp_thread(hWnd, PropId, old_proc) : old_proc(hWnd, PropId);
+}
+
+BOOL __stdcall NtUserSetProp(HWND hWnd, ATOM PropId, HANDLE value, NtUserCallHook *const context)
+{
+	NtUserSetProp_t *const old_proc = reinterpret_cast<NtUserSetProp_t *>(&context->old_proc[0]);
+	return NtUserSetProp_thread ? NtUserSetProp_thread(hWnd, PropId, value, old_proc) : old_proc(hWnd, PropId, value);
+}
+
+NtUserCallHook const NtUserGetProp_hook(GetModuleHandle(TEXT("win32u.dll")), "NtUserGetProp", reinterpret_cast<FARPROC>(NtUserGetProp), 2);
+NtUserCallHook const NtUserSetProp_hook(GetModuleHandle(TEXT("win32u.dll")), "NtUserSetProp", reinterpret_cast<FARPROC>(NtUserSetProp), 3);
 
 class mutex
 {
@@ -321,6 +434,7 @@ namespace winnt
 	struct FILE_FS_ATTRIBUTE_INFORMATION { unsigned long FileSystemAttributes; unsigned long MaximumComponentNameLength; unsigned long FileSystemNameLength; wchar_t FileSystemName[1]; };
 	union FILE_IO_PRIORITY_HINT_INFORMATION { IO_PRIORITY_HINT PriorityHint; unsigned long long _alignment; };
 	struct SYSTEM_TIMEOFDAY_INFORMATION { LARGE_INTEGER BootTime; LARGE_INTEGER CurrentTime; LARGE_INTEGER TimeZoneBias; ULONG TimeZoneId; ULONG Reserved; };
+	struct TIME_FIELDS { short Year; short Month; short Day; short Hour; short Minute; short Second; short Milliseconds; short Weekday; };
 
 	template<class T> struct identity { typedef T type; };
 	typedef long NTSTATUS;
@@ -334,6 +448,7 @@ namespace winnt
 	X(RtlNtStatusToDosError, unsigned long NTAPI(IN NTSTATUS NtStatus));
 	X(RtlSystemTimeToLocalTime, NTSTATUS NTAPI(IN LARGE_INTEGER const *SystemTime, OUT PLARGE_INTEGER LocalTime));
 	X(NtQuerySystemInformation, NTSTATUS NTAPI(IN enum _SYSTEM_INFORMATION_CLASS SystemInfoClass, OUT PVOID SystemInfoBuffer, IN ULONG SystemInfoBufferSize, OUT PULONG BytesReturned OPTIONAL));
+	X(RtlTimeToTimeFields, VOID NTAPI(LARGE_INTEGER *Time, TIME_FIELDS *TimeFields));
 #undef  X
 }
 
@@ -344,38 +459,6 @@ LONGLONG RtlSystemTimeToLocalTime(LONGLONG systemTime)
 	long status = winnt::RtlSystemTimeToLocalTime(&time2, &localTime);
 	if (status != 0) { RaiseException(status, 0, 0, NULL); }
 	return localTime.QuadPart;
-}
-
-void LocalTimeToString(LONGLONG time, std::tstring &buffer, bool const sortable, LCID lcid = GetThreadLocale())
-{
-	SYSTEMTIME sysTime = { 0 };
-	if (FileTimeToSystemTime(&reinterpret_cast<FILETIME &>(time), &sysTime))
-	{
-		if (sortable)
-		{
-			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wYear  , 4); buffer += _T('-');
-			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wMonth , 2); buffer += _T('-');
-			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wDay   , 2); buffer += _T(' ');
-			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wHour  , 2); buffer += _T(':');
-			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wMinute, 2); buffer += _T(':');
-			NumberFormatter::format_fast_ascii_append(buffer, sysTime.wSecond, 2);
-		}
-		else
-		{
-			buffer.resize(64);
-			size_t cch = 0;
-			size_t const cchDate = static_cast<size_t>(GetDateFormat(lcid, 0, &sysTime, NULL, &buffer[0], static_cast<int>(buffer.size())));
-			cch += cchDate;
-			if (cchDate > 0)
-			{
-				// cchDate INCLUDES null-terminator
-				buffer[cchDate - 1] = _T(' ');
-				size_t const cchTime = static_cast<size_t>(GetTimeFormat(lcid, 0, &sysTime, NULL, &buffer[cchDate], static_cast<int>(buffer.size() - cchDate)));
-				cch += cchTime;
-			}
-			buffer.resize(cch);
-		}
-	}
 }
 
 namespace ntfs
@@ -1755,18 +1838,6 @@ public:
 	~CoInit() { if (this->hr == S_OK) { CoUninitialize(); } }
 };
 
-template<class T>
-inline T const &use_facet(std::locale const &loc)
-{
-	return std::
-#if defined(_USEFAC)
-		_USE(loc, T)
-#else
-		use_facet<T>(loc)
-#endif
-		;
-}
-
 #ifdef WM_SETREDRAW
 class CSetRedraw
 {
@@ -1787,116 +1858,6 @@ public:
 	}
 };
 #endif
-
-class iless
-{
-	mutable std::basic_string<TCHAR> s1, s2;
-	std::ctype<TCHAR> const &ctype;
-	bool logical;
-	struct iless_ch
-	{
-		iless const *p;
-		iless_ch(iless const &l) : p(&l) { }
-		bool operator()(TCHAR a, TCHAR b) const
-		{
-			return _totupper(a) < _totupper(b);
-			//return p->ctype.toupper(a) < p->ctype.toupper(b);
-		}
-	};
-
-	template<class T>
-	static T const &use_facet(std::locale const &loc)
-	{
-		return std::
-#if defined(_USEFAC)
-			_USE(loc, T)
-#else
-			use_facet<T>(loc)
-#endif
-			;
-	}
-
-public:
-	iless(std::locale const &loc, bool const logical) : ctype(static_cast<std::ctype<TCHAR> const &>(use_facet<std::ctype<TCHAR> >(loc))), logical(logical) {}
-	bool operator()(boost::iterator_range<TCHAR const *> const a, boost::iterator_range<TCHAR const *> const b) const
-	{
-		s1.assign(a.begin(), a.end());
-		s2.assign(b.begin(), b.end());
-		return logical ? StrCmpLogicalW(s1.c_str(), s2.c_str()) < 0 : std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), iless_ch(*this));
-	}
-};
-
-template<class It, class ItBuf, class Pred>
-void mergesort_level(It const begin, ptrdiff_t const n, ItBuf const buf, Pred comp, bool const in_buf, ptrdiff_t const m, ptrdiff_t const j)
-{
-	using std::merge;
-	using std::min;
-	if (in_buf)
-	{
-		merge(
-			buf + min(n, j), buf + min(n, j + m),
-			buf + min(n, j + m), buf + min(n, j + m + m),
-			begin + min(n, j),
-			comp);
-	}
-	else
-	{
-		merge(
-			begin + min(n, j), begin + min(n, j + m),
-			begin + min(n, j + m), begin + min(n, j + m + m),
-			buf + min(n, j),
-			comp);
-	}
-}
-
-template<class It, class ItBuf, class Pred>
-bool mergesort(It const begin, It const end, ItBuf const buf, Pred comp, bool const parallel)  // MUST check the return value!
-{
-	bool in_buf = false;
-	for (ptrdiff_t m = 1, n = end - begin; m < n; in_buf = !in_buf, m += m)
-	{
-		ptrdiff_t const k = n + n - m;
-#define X() for (ptrdiff_t j = 0; j < k; j += m + m) { mergesort_level<It, ItBuf, Pred>(begin, n, buf, comp, in_buf, m, j); }
-#ifdef _OPENMP
-		if (parallel)
-		{
-#pragma omp parallel for
-			X();
-		}
-		else
-#endif
-		{
-			(void) parallel;
-			X();
-		}
-#undef X
-	}
-	// if (in_buf) { using std::swap_ranges; swap_ranges(begin, end, buf), in_buf = !in_buf; }
-	return in_buf;
-}
-
-template<class It, class Pred>
-void inplace_mergesort(It const begin, It const end, Pred const &pred, bool const parallel)
-{
-	class buffer_ptr
-	{
-		buffer_ptr(buffer_ptr const &) { }
-		void operator =(buffer_ptr const &) { }
-		typedef typename std::iterator_traits<It>::value_type value_type;
-		typedef value_type *pointer;
-		typedef size_t size_type;
-		pointer p;
-	public:
-		typedef pointer iterator;
-		~buffer_ptr() { delete [] this->p; }
-		explicit buffer_ptr(size_type const n) : p(new value_type[n]) { }
-		iterator begin() { return this->p; }
-	} buf(static_cast<size_t>(std::distance(begin, end)));
-	if (mergesort<It, typename buffer_ptr::iterator, Pred>(begin, end, buf.begin(), pred, parallel))
-	{
-		using std::swap_ranges; swap_ranges(begin, end, buf.begin());
-	}
-}
 
 class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WTL::CDialogResize<CProgressDialog>
 {
@@ -2851,11 +2812,13 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	Threads threads;
 	NumberFormatter nformat_ui, nformat_io;
 	long long time_zone_bias;
+	LCID lcid;
 	HANDLE hWait, hEvent;
 	CoInit coinit;
 	COLORREF deletedColor;
 	COLORREF encryptedColor;
 	COLORREF compressedColor;
+	int suppress_escapes;
 	static DWORD WINAPI SHOpenFolderAndSelectItemsThread(IN LPVOID lpParameter)
 	{
 		std::auto_ptr<std::pair<std::pair<CShellItemIDList, ATL::CComPtr<IShellFolder> >, std::vector<CShellItemIDList> > > p(
@@ -2879,9 +2842,9 @@ public:
 	CMainDlg(HANDLE const hEvent) :
 		num_threads(static_cast<size_t>(get_num_threads())), indices_created(),
 		closing_event(CreateEvent(NULL, TRUE, FALSE, NULL)), iocp(CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0)),
-		threads(), nformat_ui(get_numpunct_locale(std::locale(""))), nformat_io(), time_zone_bias(), hWait(), hEvent(hEvent),
+		threads(), nformat_ui(get_numpunct_locale(std::locale(""))), nformat_io(), time_zone_bias(), lcid(GetThreadLocale()), hWait(), hEvent(hEvent),
 		iconLoader(BackgroundWorker::create(true)), lastRequestedIcon(), hRichEdit(), autocomplete_called(false), _small_image_list(),
-		deletedColor(RGB(0xFF, 0, 0)), encryptedColor(RGB(0, 0xFF, 0)), compressedColor(RGB(0, 0, 0xFF))
+		deletedColor(RGB(0xFF, 0, 0)), encryptedColor(RGB(0, 0xFF, 0)), compressedColor(RGB(0, 0, 0xFF)), suppress_escapes(0)
 	{
 		winnt::SYSTEM_TIMEOFDAY_INFORMATION info = {};
 		unsigned long nb;
@@ -2889,9 +2852,46 @@ public:
 		this->time_zone_bias = info.TimeZoneBias.QuadPart;
 	}
 
-	long long SystemTimeToLocalTime(long long system_time) const
+	void SystemTimeToString(long long system_time /* UTC */, std::tstring &buffer, bool const sortable) const
 	{
-		return system_time - this->time_zone_bias;
+		long long local_time = system_time - this->time_zone_bias;
+		winnt::TIME_FIELDS time_fields;
+		winnt::RtlTimeToTimeFields(&reinterpret_cast<LARGE_INTEGER &>(local_time), &time_fields);
+		if (sortable)
+		{
+			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Year  ), 4); buffer += _T('-');
+			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Month ), 2); buffer += _T('-');
+			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Day   ), 2); buffer += _T(' ');
+			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Hour  ), 2); buffer += _T(':');
+			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Minute), 2); buffer += _T(':');
+			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Second), 2);
+		}
+		else
+		{
+			SYSTEMTIME sysTime =
+			{
+				static_cast<WORD>(time_fields.Year),
+				static_cast<WORD>(time_fields.Month),
+				static_cast<WORD>(time_fields.Weekday),
+				static_cast<WORD>(time_fields.Day),
+				static_cast<WORD>(time_fields.Hour),
+				static_cast<WORD>(time_fields.Minute),
+				static_cast<WORD>(time_fields.Second),
+				static_cast<WORD>(time_fields.Milliseconds)
+			};
+			buffer.resize(64);
+			size_t cch = 0;
+			size_t const cchDate = static_cast<size_t>(GetDateFormat(lcid, 0, &sysTime, NULL, &buffer[0], static_cast<int>(buffer.size())));
+			cch += cchDate;
+			if (cchDate > 0)
+			{
+				// cchDate INCLUDES null-terminator
+				buffer[cchDate - 1] = _T(' ');
+				size_t const cchTime = static_cast<size_t>(GetTimeFormat(lcid, 0, &sysTime, NULL, &buffer[cchDate], static_cast<int>(buffer.size() - cchDate)));
+				cch += cchTime;
+			}
+			buffer.resize(cch);
+		}
 	}
 
 	void OnDestroy()
@@ -3224,7 +3224,8 @@ public:
 #endif
 					);
 				this->results.clear_ordering();
-				inplace_mergesort(this->results.rbegin(), this->results.rend(), [this, subitem, &vnames, reversed, shift_pressed, alt_pressed, ctrl_pressed](Results::value_type const &_a, Results::value_type const &_b)
+				unsigned long tprev = GetTickCount();
+				std::stable_sort(this->results.rbegin(), this->results.rend(), [this, subitem, &vnames, &tprev, reversed, shift_pressed, alt_pressed, ctrl_pressed](Results::value_type const &_a, Results::value_type const &_b)
 				{
 					Results::value_type const &a = reversed ? _a : _b, &b = reversed ? _b : _a;
 					std::pair<std::tstring, std::tstring> &names = *(vnames.begin()
@@ -3232,7 +3233,16 @@ public:
 						+ omp_get_thread_num()
 #endif
 						);
-					if (GetAsyncKeyState(VK_ESCAPE) < 0) { throw CStructured_Exception(ERROR_CANCELLED, NULL); }
+					unsigned long const tnow = GetTickCount();
+					if (tnow - tprev >= CProgressDialog::UPDATE_INTERVAL)
+					{
+						if (GetAsyncKeyState(VK_ESCAPE) < 0)
+						{
+							this->suppress_escapes += 1;
+							throw CStructured_Exception(ERROR_CANCELLED, NULL);
+						}
+						tprev = tnow;
+					}
 					boost::remove_cv<Index>::type const
 						*index1 = a.index->unvolatile(),
 						*index2 = b.index->unvolatile();
@@ -3292,7 +3302,7 @@ public:
 						}
 					}
 					return less;
-				}, false /* parallelism BREAKS exception handling, and therefore user-cancellation */);
+				} /* parallelism BREAKS exception handling, and therefore user-cancellation */);
 			}
 			catch (CStructured_Exception &ex)
 			{
@@ -3314,7 +3324,7 @@ public:
 
 	void clear()
 	{
-		WTL::CWaitCursor wait(true, IDC_APPSTARTING);
+		WTL::CWaitCursor wait(this->lvFiles.GetItemCount() > 0, IDC_APPSTARTING);
 		this->lastRequestedIcon.resize(0);
 		this->lvFiles.SetItemCount(0);
 		this->results.clear();
@@ -3621,6 +3631,49 @@ public:
 
 	void append_selected_indices(std::vector<size_t> &result) const
 	{
+		__declspec(thread) static void *s_hook;
+		struct Hooked
+		{
+			void *old_s_hook;
+			HWND prev_hwnd;
+			ATOM prev_atom;
+			HANDLE prev_result;
+			NtUserGetProp_with_context_t *NtUserGetProp_old;
+			NtUserSetProp_with_context_t *NtUserSetProp_old;
+			Hooked() : old_s_hook(s_hook), prev_hwnd(), prev_atom(), prev_result()
+			{
+				s_hook = this;
+				this->NtUserGetProp_old = NtUserGetProp_thread; NtUserGetProp_thread = NtUserGetProp;
+				this->NtUserSetProp_old = NtUserSetProp_thread; NtUserSetProp_thread = NtUserSetProp;
+			}
+			~Hooked()
+			{
+				NtUserSetProp_thread = this->NtUserSetProp_old;
+				NtUserGetProp_thread = this->NtUserGetProp_old;
+				s_hook = old_s_hook;
+			}
+			static HANDLE __stdcall NtUserGetProp(HWND hWnd, ATOM PropId, NtUserGetProp_t *const old)
+			{
+				Hooked *const hook = static_cast<Hooked *>(s_hook);
+				if (hook->prev_hwnd != hWnd || hook->prev_atom != PropId)
+				{
+					hook->prev_result = old(hWnd, PropId);
+					hook->prev_hwnd = hWnd;
+					hook->prev_atom = PropId;
+				}
+				return hook->prev_result;
+			}
+			static BOOL __stdcall NtUserSetProp(HWND hWnd, ATOM PropId, HANDLE value, NtUserSetProp_t *const old)
+			{
+				Hooked *const hook = static_cast<Hooked *>(s_hook);
+				BOOL const result = old(hWnd, PropId, value);
+				if (result && hook->prev_hwnd == hWnd && hook->prev_atom == PropId)
+				{
+					hook->prev_result = value;
+				}
+				return result;
+			}
+		} NtUserProp_hook;
 		WNDPROC const lvFiles_wndproc = reinterpret_cast<WNDPROC>(::GetWindowLongPtr(this->lvFiles.m_hWnd, GWLP_WNDPROC));
 		for (int i = -1;;)
 		{
@@ -3836,25 +3889,32 @@ public:
 		}
 		else if (id == dumpId)
 		{
-			WTL::CFileDialog dlg(FALSE, _T("csv"), NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, _T("Comma-separated values [UTF-8] (*.csv)\0*.csv\0Tab-separated values [UTF-8] (*.tsv)\0*.tsv\0\0"));
-			dlg.m_ofn.lpfnHook = NULL;
-			dlg.m_ofn.Flags &= ~OFN_ENABLEHOOK;
-			dlg.m_ofn.lpstrTitle = _T("Save Table");
-			if (GetSaveFileName(&dlg.m_ofn))
+			WTL::CFileDialog fdlg(FALSE, _T("csv"), NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, _T("Comma-separated values [UTF-8] (*.csv)\0*.csv\0Tab-separated values [UTF-8] (*.tsv)\0*.tsv\0\0"));
+			fdlg.m_ofn.lpfnHook = NULL;
+			fdlg.m_ofn.Flags &= ~OFN_ENABLEHOOK;
+			fdlg.m_ofn.lpstrTitle = _T("Save Table");
+			if (GetSaveFileName(&fdlg.m_ofn))
 			{
 				typedef tchar_ci_traits char_traits;
-				std::tstring const fileext = dlg.m_ofn.nFileExtension ? &dlg.m_ofn.lpstrFile[dlg.m_ofn.nFileExtension] : _T("");
+				std::tstring const fileext = fdlg.m_ofn.nFileExtension ? &fdlg.m_ofn.lpstrFile[fdlg.m_ofn.nFileExtension] : _T("");
 				bool const tabsep = fileext.size() == 3 && char_traits::compare(fileext.data(), _T("tsv"), fileext.size()) == 0;
 				WTL::CWaitCursor wait;
 				int const ncolumns = this->lvFiles.GetHeader().GetItemCount();
-				File const output = { _tfopen(dlg.m_ofn.lpstrFile, _T("wb")) };
-				if (output)
+				File const output = { _topen(fdlg.m_ofn.lpstrFile, _O_BINARY | _O_TRUNC | _O_CREAT | _O_RDWR | _O_SEQUENTIAL, _S_IREAD | _S_IWRITE) };
+				if (output != NULL)
 				{
+					CProgressDialog dlg(*this);
+					dlg.SetProgressTitle(_T("Dumping table..."));
+					if (dlg.HasUserCancelled()) { return; }
 					std::string line_buffer_utf8;
 					std::tstring line_buffer, text_buffer;
-					for (size_t i = 0; i < results.size(); ++i)
+					size_t const buffer_size = 1 << 20;
+					line_buffer.reserve(buffer_size);  // this is necessary since MSVC STL reallocates poorly, degenerating into O(n^2)
+					unsigned long long nwritten_since_update = 0;
+					unsigned long prev_update_time = GetTickCount();
+					for (size_t i = 0; i < results.size() && !dlg.HasUserCancelled(); ++i)
 					{
-						line_buffer.erase(line_buffer.begin(), line_buffer.end());
+						bool should_flush = i + 1 >= results.size();
 						Results::value_type const &row = *results[i];
 						bool any = false;
 						for (int j = 0; j < ncolumns; ++j)
@@ -3862,6 +3922,34 @@ public:
 							if (j == COLUMN_INDEX_NAME) { continue; }
 							text_buffer.erase(text_buffer.begin(), text_buffer.end());
 							this->GetSubItemText(row, j, false, text_buffer, false);
+							if (j == COLUMN_INDEX_PATH)
+							{
+								if (dlg.ShouldUpdate() || i + 1 == results.size())
+								{
+									should_flush = true;
+									unsigned long const update_time = GetTickCount();
+									std::basic_ostringstream<TCHAR> ss;
+									ss << _T("Dumping selection ");
+									ss << nformat_ui(i + 1);
+									ss << _T(" of ");
+									ss << nformat_ui(results.size());
+									if (update_time != prev_update_time)
+									{
+										ss << _T(" ");
+										ss << _T("(");
+										ss << nformat_ui(nwritten_since_update * 1000U / ((update_time - prev_update_time) * 1ULL << 20));
+										ss << _T(" MiB/s");
+										ss << _T(")");
+									}
+									ss << _T(":");
+									ss << std::endl;
+									ss << text_buffer;
+									std::tstring const &text = ss.str();
+									dlg.SetProgressText(boost::iterator_range<TCHAR const *>(text.data(), text.data() + text.size()));
+									dlg.SetProgress(static_cast<long long>(i), static_cast<long long>(results.size()));
+									dlg.Flush();
+								}
+							}
 							if (any) { line_buffer += tabsep ? _T('\t') : _T(','); }
 							// NOTE: We assume there are no double-quotes here, so we don't handle escaping for that! This is a valid assumption for this program.
 							if (tabsep)
@@ -3886,13 +3974,22 @@ public:
 						}
 						line_buffer += _T('\r');
 						line_buffer += _T('\n');
+						should_flush |= line_buffer.size() >= buffer_size;
+						if (should_flush)
+						{
 #if defined(_UNICODE) &&_UNICODE
-						line_buffer_utf8.resize((line_buffer.size() + 1) * 6, _T('\0'));
-						line_buffer_utf8.resize(WideCharToMultiByte(CP_UTF8, 0, line_buffer.empty() ? NULL : &line_buffer[0], static_cast<int>(line_buffer.size()), &line_buffer_utf8[0], static_cast<int>(line_buffer_utf8.size()), NULL, NULL));
-						fwrite(line_buffer_utf8.data(), sizeof(*line_buffer_utf8.data()), line_buffer_utf8.size(), output);
+							using std::max;
+							line_buffer_utf8.resize(max(line_buffer_utf8.size(), (line_buffer.size() + 1) * 6), _T('\0'));
+							int const cch = WideCharToMultiByte(CP_UTF8, 0, line_buffer.empty() ? NULL : &line_buffer[0], static_cast<int>(line_buffer.size()), &line_buffer_utf8[0], static_cast<int>(line_buffer_utf8.size()), NULL, NULL);
+							if (cch > 0)
+							{
+								nwritten_since_update += _write(output, line_buffer_utf8.data(), sizeof(*line_buffer_utf8.data()) * static_cast<size_t>(cch));
+							}
 #else
-						fwrite(line_buffer.data(), sizeof(*line_buffer.data()), line_buffer.size(), output);
+							nwritten_since_update += _write(output, line_buffer.data(), sizeof(*line_buffer.data()) * line_buffer.size());
 #endif
+							line_buffer.erase(line_buffer.begin(), line_buffer.end());
+						}
 					}
 				}
 			}
@@ -4011,9 +4108,9 @@ public:
 		case COLUMN_INDEX_PATH             : text = i->root_path(); i->get_path(key, text, false); break;
 		case COLUMN_INDEX_SIZE             : uvalue = static_cast<unsigned long long>(i->get_sizes(key).length   ); text = nformat(uvalue); break;
 		case COLUMN_INDEX_SIZE_ON_DISK     : uvalue = static_cast<unsigned long long>(i->get_sizes(key).allocated); text = nformat(uvalue); break;
-		case COLUMN_INDEX_CREATION_TIME    : svalue = i->get_stdinfo(key.frs).created ; LocalTimeToString(SystemTimeToLocalTime(svalue), text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
-		case COLUMN_INDEX_MODIFICATION_TIME: svalue = i->get_stdinfo(key.frs).written ; LocalTimeToString(SystemTimeToLocalTime(svalue), text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
-		case COLUMN_INDEX_ACCESS_TIME      : svalue = i->get_stdinfo(key.frs).accessed; LocalTimeToString(SystemTimeToLocalTime(svalue), text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
+		case COLUMN_INDEX_CREATION_TIME    : svalue = i->get_stdinfo(key.frs).created ; SystemTimeToString(svalue, text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
+		case COLUMN_INDEX_MODIFICATION_TIME: svalue = i->get_stdinfo(key.frs).written ; SystemTimeToString(svalue, text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
+		case COLUMN_INDEX_ACCESS_TIME      : svalue = i->get_stdinfo(key.frs).accessed; SystemTimeToString(svalue, text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
 		case COLUMN_INDEX_DESCENDENTS      : uvalue = static_cast<unsigned long long>(i->get_sizes(key).descendents); if (uvalue) { text = nformat(uvalue); } else { text.erase(text.begin(), text.end()); } break;
 		default: break;
 		}
@@ -4108,10 +4205,11 @@ public:
 
 	void OnCancel(UINT /*uNotifyCode*/, int /*nID*/, HWND /*hWnd*/)
 	{
-		if (this->CheckAndCreateIcon(false))
+		if (this->suppress_escapes <= 0 && this->CheckAndCreateIcon(false))
 		{
 			this->ShowWindow(SW_HIDE);
 		}
+		this->suppress_escapes = 0;
 	}
 
 	BOOL PreTranslateMessage(MSG* pMsg)

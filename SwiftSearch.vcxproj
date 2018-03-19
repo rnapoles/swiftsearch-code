@@ -179,7 +179,6 @@ Echo Embedding 64-bit version...&amp;&amp; Path %PATH%;%ProgramFiles%\Resource H
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
       <PrecompiledHeader>Use</PrecompiledHeader>
-      <FunctionLevelLinking>true</FunctionLevelLinking>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ForcedIncludeFiles>stdafx.h;$(ProjectDir)/targetver.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
       <AdditionalIncludeDirectories>$(SystemDrive)\WinDDK\3790.1830\inc\crt;$(SystemDrive)\WinDDK\3790.1830\inc\wxp;$(SystemDrive)\WinDDK\3790.1830\inc\ddk\wxp;$(SystemDrive)\WinDDK\3790.1830\inc\ddk\wdm\wxp;$(SystemDrive)\WinDDK\3790.1830\inc\wnet;$(SystemDrive)\WinDDK\3790.1830\inc\ddk\wnet;$(SystemDrive)\WinDDK\3790.1830\inc\ddk\wdm\wnet;$(SystemDrive)\WinDDK\3790.1830\inc\atl30;$(SystemDrive)\WinDDK\3790.1830\inc\mfc42;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -188,7 +187,6 @@ Echo Embedding 64-bit version...&amp;&amp; Path %PATH%;%ProgramFiles%\Resource H
       <EnableEnhancedInstructionSet>NoExtensions</EnableEnhancedInstructionSet>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/d2Zi+ %(AdditionalOptions)</AdditionalOptions>
-      <DebugInformationFormat>None</DebugInformationFormat>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
