@@ -54,10 +54,12 @@ extern WTL::CAppModule _Module;
 #include "BackgroundWorker.hpp"
 #include "ShellItemIDList.hpp"
 #include "CModifiedDialogImpl.hpp"
+#include "NtUserCallHook.hpp"
 
 #include "resource.h"
 
 #ifndef _DEBUG
+#include <boost/exception/detail/shared_ptr.hpp>
 #define clear() resize(0)
 #include <boost/exception/info.hpp>
 #undef clear
@@ -115,104 +117,21 @@ struct File
 	handle_type *operator &() { return &this->f; }
 };
 
-class NtUserCallHook
+struct Hook_init { template<class Hook> Hook_init(Hook &hook, FARPROC const proc) { hook.init(proc); } };
+
+#define X(F) static Hook_init const hook_##F##_init(hook_##F, GetProcAddress(GetModuleHandle(TEXT("win32u.dll")), #F))
+HOOK_DEFINE(HANDLE __stdcall, NtUserGetProp, (HWND hWnd, ATOM PropId))
 {
-	typedef NtUserCallHook this_type;
-	NtUserCallHook(this_type const &);
-	this_type &operator =(this_type const &);
-public:
-	explicit NtUserCallHook(HMODULE const module, char const *const name, FARPROC const new_proc, unsigned char const context_arg)
-	{
-		FARPROC const proc = GetProcAddress(module, name);
-		unsigned char *const proc_buf = reinterpret_cast<unsigned char *const &>(proc);
-#ifdef _WIN64
-		if (context_arg < 4 /* we don't support context arguments that aren't in a register */ &&
-			memcmp(&proc_buf[0], "\x4C\x8B\xD1\xB8", 4) == 0 &&
-			memcmp(&proc_buf[8], "\xF6\x04\x25", 3) == 0 &&
-			memcmp(&proc_buf[16], "\x75\x03\x0F\x05\xC3\xCD\x2E\xC3", 8) == 0)
-		{
-			unsigned int const proc_buf_size = 24;
-			memcpy(this->old_proc, proc_buf, proc_buf_size);
-			DWORD old_protect;
-			if (VirtualProtect(this->old_proc, proc_buf_size, PAGE_EXECUTE_READWRITE, &old_protect) &&
-				VirtualProtect(proc_buf, proc_buf_size, PAGE_EXECUTE_READWRITE, &old_protect))
-			{
-				ptrdiff_t j = 0;
-				proc_buf[j++] = 0x48;
-				proc_buf[j++] = 0xB8;
-				{
-					uintptr_t const arg = reinterpret_cast<uintptr_t>(new_proc);
-					unsigned int i = 0;
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-				}
-				bool has_context = true;
-				switch (context_arg)
-				{
-				case 0: proc_buf[j++] = 0x48; proc_buf[j++] = 0xB9; break;
-				case 1: proc_buf[j++] = 0x48; proc_buf[j++] = 0xBA; break;
-				case 2: proc_buf[j++] = 0x49; proc_buf[j++] = 0xB8; break;
-				case 3: proc_buf[j++] = 0x49; proc_buf[j++] = 0xB9; break;
-				default: has_context = false; break;
-				}
-				if (has_context)
-				{
-					uintptr_t const arg = reinterpret_cast<uintptr_t>(this);
-					unsigned int i = 0;
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-					proc_buf[j++] = static_cast<unsigned char>(arg >> (i++ * CHAR_BIT));
-				}
-				proc_buf[j++] = 0xFF;
-				proc_buf[j++] = 0xE0;
-				VirtualProtect(proc_buf, proc_buf_size, old_protect, &old_protect);
-			}
-		}
-#else
-#endif
-	}
-	unsigned char old_proc[
-#ifdef _WIN64
-		24
-#else
-		1
-#endif
-	];
-};
-
-typedef HANDLE __stdcall NtUserGetProp_t(HWND hWnd, ATOM PropId);
-typedef HANDLE __stdcall NtUserGetProp_with_context_t(HWND hWnd, ATOM PropId, NtUserGetProp_t *const old_proc);
-__declspec(thread) static NtUserGetProp_with_context_t *NtUserGetProp_thread = NULL;
-
-typedef BOOL __stdcall NtUserSetProp_t(HWND hWnd, ATOM PropId, HANDLE value);
-typedef BOOL __stdcall NtUserSetProp_with_context_t(HWND hWnd, ATOM PropId, HANDLE value, NtUserSetProp_t *const old_proc);
-__declspec(thread) static NtUserSetProp_with_context_t *NtUserSetProp_thread = NULL;
-
-HANDLE __stdcall NtUserGetProp(HWND hWnd, ATOM PropId, NtUserCallHook *const context)
-{
-	NtUserGetProp_t *const old_proc = reinterpret_cast<NtUserGetProp_t *>(&context->old_proc[0]);
-	return NtUserGetProp_thread ? NtUserGetProp_thread(hWnd, PropId, old_proc) : old_proc(hWnd, PropId);
+	return base_or_thread_like(hook)(hWnd, PropId);
 }
+X(NtUserGetProp);
 
-BOOL __stdcall NtUserSetProp(HWND hWnd, ATOM PropId, HANDLE value, NtUserCallHook *const context)
+HOOK_DEFINE(BOOL __stdcall, NtUserSetProp, (HWND hWnd, ATOM PropId, HANDLE value))
 {
-	NtUserSetProp_t *const old_proc = reinterpret_cast<NtUserSetProp_t *>(&context->old_proc[0]);
-	return NtUserSetProp_thread ? NtUserSetProp_thread(hWnd, PropId, value, old_proc) : old_proc(hWnd, PropId, value);
+	return base_or_thread_like(hook)(hWnd, PropId, value);
 }
-
-NtUserCallHook const NtUserGetProp_hook(GetModuleHandle(TEXT("win32u.dll")), "NtUserGetProp", reinterpret_cast<FARPROC>(NtUserGetProp), 2);
-NtUserCallHook const NtUserSetProp_hook(GetModuleHandle(TEXT("win32u.dll")), "NtUserSetProp", reinterpret_cast<FARPROC>(NtUserSetProp), 3);
+X(NtUserSetProp);
+#undef X
 
 class mutex
 {
@@ -438,7 +357,7 @@ namespace winnt
 
 	template<class T> struct identity { typedef T type; };
 	typedef long NTSTATUS;
-#define X(F, T) identity<T>::type &F = *reinterpret_cast<identity<T>::type *>(GetProcAddress(GetModuleHandle(_T("NTDLL.dll")), #F))
+#define X(F, T) identity<T>::type &F = *reinterpret_cast<identity<T>::type *>(GetProcAddress(GetModuleHandle(_T("ntdll.dll")), #F))
 	X(NtOpenFile, NTSTATUS NTAPI(OUT PHANDLE FileHandle, IN ACCESS_MASK DesiredAccess, IN OBJECT_ATTRIBUTES *ObjectAttributes, OUT IO_STATUS_BLOCK *IoStatusBlock, IN ULONG ShareAccess, IN ULONG OpenOptions));
 	X(NtReadFile, NTSTATUS NTAPI(IN HANDLE FileHandle, IN HANDLE Event OPTIONAL, IN IO_APC_ROUTINE *ApcRoutine OPTIONAL, IN PVOID ApcContext OPTIONAL, OUT IO_STATUS_BLOCK *IoStatusBlock, OUT PVOID buffer_ptr, IN ULONG Length, IN PLARGE_INTEGER ByteOffset OPTIONAL, IN PULONG Key OPTIONAL));
 	X(NtQueryVolumeInformationFile, NTSTATUS NTAPI(HANDLE FileHandle, IO_STATUS_BLOCK *IoStatusBlock, PVOID FsInformation, unsigned long Length, unsigned long FsInformationClass));
@@ -548,7 +467,7 @@ namespace ntfs
 		unsigned char IsNonResident;
 		unsigned char NameLength;
 		unsigned short NameOffset;
-		unsigned short Flags;
+		unsigned short Flags;  // 0x0001 = Compressed, 0x4000 = Encrypted, 0x8000 = Sparse
 		unsigned short Instance;
 		union
 		{
@@ -750,6 +669,7 @@ public:
 	}
 	~Handle() { if (valid(this->value)) { CloseHandle(value); } }
 	Handle &operator =(Handle other) { return other.swap(*this), *this; }
+	operator void *() const volatile { return this->value; }
 	operator void *() const { return this->value; }
 	void swap(Handle &other) { using std::swap; swap(this->value, other.value); }
 	friend void swap(Handle &a, Handle &b) { return a.swap(b); }
@@ -1077,7 +997,91 @@ private:
 	}
 };
 
+template<class T, class Ax = std::allocator<T> >
+class vector_with_fast_size : std::vector<T, Ax>
+{
+	typedef std::vector<T, Ax> base_type;
+	typename base_type::size_type _size;
+public:
+	vector_with_fast_size() : _size() { }
+	typedef typename base_type::const_iterator const_iterator;
+	typedef typename base_type::iterator iterator;
+	typedef typename base_type::size_type size_type;
+	typedef typename base_type::value_type value_type;
+	using base_type::back;
+	using base_type::begin;
+	using base_type::empty;
+	using base_type::end;
+	using base_type::front;
+	using base_type::reserve;
+	using base_type::operator[];
+	size_type size() const
+	{
+		return this->_size;
+	}
+	void resize(size_type const size)
+	{
+		this->base_type::resize(size);
+		this->_size = size;
+	}
+	void resize(size_type const size, value_type const &default_value)
+	{
+		this->base_type::resize(size, default_value);
+		this->_size = size;
+	}
+	void push_back(value_type const &value)
+	{
+		this->base_type::push_back(value);
+		++this->_size;
+	}
+};
+
 typedef std::pair<unsigned long long, clock_t> Speed;
+
+template<class T> struct remove_volatile             { typedef T type; };
+template<class T> struct remove_volatile<T volatile> { typedef T type; };
+
+template<class T>
+struct mutable_
+{
+	mutable T value;
+};
+
+template<class T>
+class lock_ptr : lock_guard<mutex>
+{
+	typedef lock_ptr this_type;
+	T *me;
+	lock_ptr(this_type const &);
+	this_type &operator =(this_type const &);
+public:
+	~lock_ptr() { }
+	lock_ptr(T volatile *const me, bool const do_lock = true) : lock_guard<mutex_type>(do_lock && me ? &me->get_mutex() : NULL), me(const_cast<T *>(me)) { }
+	lock_ptr(T *const me, bool const do_lock = false) : lock_guard<mutex_type>(do_lock && me ? me->get_mutex() : NULL), me(me) { }
+	lock_ptr() : lock_guard<mutex_type>(), me() { }
+	T *operator->() const { return me; }
+	T &operator *() const { return *me; }
+	void swap(this_type &other)
+	{
+		using std::swap;
+		swap(static_cast<lock_guard<mutex_type> &>(*this), static_cast<lock_guard<mutex_type> &>(other));
+		swap(this->me, other.me);
+	}
+	this_type &init(T volatile *const me) { this_type(me).swap(*this); return *this; }
+	this_type &init(T *const me) { this_type(me).swap(*this); return *this; }
+};
+
+template<class T>
+lock_ptr<typename remove_volatile<T>::type> &lock(T *const value, mutable_<lock_ptr<typename remove_volatile<T>::type> > const &holder = mutable_<lock_ptr<typename remove_volatile<T>::type> >())
+{
+	return holder.value.init(value);
+}
+
+template<class T>
+lock_ptr<typename remove_volatile<T>::type> &lock(boost::intrusive_ptr<T> const &value, mutable_<lock_ptr<typename remove_volatile<T>::type> > const &holder = mutable_<lock_ptr<typename remove_volatile<T>::type> >())
+{
+	return lock<T>(value.get(), holder);
+}
 
 class NtfsIndex : public RefCounted<NtfsIndex>
 {
@@ -1129,10 +1133,10 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	};
 	friend struct std::is_scalar<StreamInfo>;
 	typedef std::codecvt<std::tstring::value_type, char, int /*std::mbstate_t*/> CodeCvt;
-	typedef std::vector<LinkInfo> LinkInfos;
-	typedef std::vector<StreamInfo> StreamInfos;
+	typedef vector_with_fast_size<LinkInfo> LinkInfos;
+	typedef vector_with_fast_size<StreamInfo> StreamInfos;
 	struct Record;
-	typedef std::vector<Record> Records;
+	typedef vector_with_fast_size<Record> Records;
 	typedef std::vector<unsigned int> RecordsLookup;
 	struct ChildInfo
 	{
@@ -1140,8 +1144,9 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 		typedef small_t<size_t>::type next_entry_type; next_entry_type next_entry;
 		small_t<Records::size_type>::type record_number;
 		unsigned short name_index;
+		static ChildInfo const empty;
 	};
-	typedef std::vector<ChildInfo> ChildInfos;
+	typedef vector_with_fast_size<ChildInfo> ChildInfos;
 	struct Record
 	{
 		StandardInfo stdinfo;
@@ -1184,7 +1189,6 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 		typedef RecordsLookup::value_type direct_address_type; direct_address_type direct_address;
 	};
 #pragma pack(pop)
-
 	Records::iterator at(size_t const frs, Records::iterator *const existing_to_revalidate = NULL)
 	{
 		if (frs >= this->records_lookup.size())
@@ -1278,26 +1282,8 @@ public:
 	}
 	NtfsIndex *unvolatile() volatile { return const_cast<NtfsIndex *>(this); }
 	NtfsIndex const *unvolatile() const volatile { return const_cast<NtfsIndex *>(this); }
-	size_t total_names_and_streams() const volatile
-	{
-		this_type const *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->total_names_and_streams();
-	}
 	size_t total_names_and_streams() const { return this->_total_names_and_streams; }
-	size_t total_names() const volatile
-	{
-		this_type const *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->total_names();
-	}
 	size_t total_names() const { return this->nameinfos.size(); }
-	size_t expected_records() const volatile
-	{
-		this_type const *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->expected_records();
-	}
 	size_t expected_records() const { return this->_expected_records; }
 	size_t records_so_far() const volatile { return this->_records_so_far.load(atomic_namespace::memory_order_acquire); }
 	size_t records_so_far() const { return this->_records_so_far.load(atomic_namespace::memory_order_relaxed); }
@@ -1309,19 +1295,7 @@ public:
 		total = this->_perf_avg_speed;
 		return total;
 	}
-	Speed speed() const volatile
-	{
-		this_type const *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->speed();
-	}
 	std::tstring const &root_path() const { return this->_root_path; }
-	std::tstring const &root_path() const volatile
-	{
-		this_type const *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->root_path();
-	}
 	bool failed() const
 	{
 		return this->_failed;
@@ -1335,12 +1309,6 @@ public:
 	{
 		this_type *const me = this->unvolatile();
 		me->_cancelled.store(true, atomic_namespace::memory_order_release);
-	}
-	uintptr_t finished_event() const volatile
-	{
-		this_type const *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->finished_event();
 	}
 	uintptr_t finished_event() const
 	{
@@ -1425,12 +1393,6 @@ public:
 		finished ? SetEvent(this->_finished_event) : ResetEvent(this->_finished_event);
 		return b;
 	}
-	void reserve(unsigned int const records) volatile
-	{
-		this_type *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		me->reserve(records);
-	}
 	void reserve(unsigned int records)
 	{
 		if (!records) { mft_capacity = this->mft_capacity; }
@@ -1448,13 +1410,6 @@ public:
 			}
 		}
 		catch (std::bad_alloc &) { }
-	}
-	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, unsigned long long const skipped_begin, unsigned long long const skipped_end) volatile
-	{
-		this_type *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		// TODO: This lock prevents parallelism. Instead, add the entries to a private queue locally, then transfer them in bulk.
-		me->load(virtual_offset, buffer, size, skipped_begin, skipped_end);
 	}
 	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, unsigned long long const skipped_begin, unsigned long long const skipped_end)
 	{
@@ -1493,20 +1448,20 @@ public:
 								{
 									size_t const link_index = this->nameinfos.size();
 									this->nameinfos.push_back(base_record->first_name);
-									base_record->first_name = LinkInfos::value_type();
 									base_record->first_name.next_entry = static_cast<LinkInfos::value_type::next_entry_type>(link_index);
 								}
-								base_record->first_name.name.offset = static_cast<unsigned int>(this->names.size());
-								base_record->first_name.name.length = static_cast<unsigned char>(fn->FileNameLength);
-								base_record->first_name.parent = frs_parent;
+								LinkInfo *const info = &base_record->first_name;
+								info->name.offset = static_cast<unsigned int>(this->names.size());
+								info->name.length = static_cast<unsigned char>(fn->FileNameLength);
+								info->parent = frs_parent;
 								append(this->names, fn->FileName, fn->FileNameLength);
 								Records::iterator const parent = this->at(frs_parent, &base_record);
 								size_t const child_index = this->childinfos.size();
-								ChildInfo child_info = ChildInfo();
-								child_info.record_number = frs_base;
-								child_info.name_index = base_record->name_count;
-								child_info.next_entry = parent->first_child;
-								this->childinfos.push_back(child_info);
+								this->childinfos.push_back(ChildInfo::empty);
+								ChildInfo *const child_info = &this->childinfos.back();
+								child_info->record_number = frs_base;
+								child_info->name_index = base_record->name_count;
+								child_info->next_entry = parent->first_child;
 								parent->first_child = static_cast<ChildInfos::value_type::next_entry_type>(child_index);
 								this->_total_names_and_streams += base_record->stream_count;
 								++base_record->name_count;
@@ -1525,7 +1480,8 @@ public:
 					case ntfs::AttributeReparsePoint:
 					case ntfs::AttributeEA:
 					case ntfs::AttributeEAInformation:
-						if (!ah->IsNonResident || !ah->NonResident.LowestVCN)
+						// TODO: Actually parse the mapping pairs! Otherwise we get wrong information for WoF-compressed or (possibly) sparse files.
+						if (!(ah->IsNonResident && ah->NonResident.LowestVCN))
 						{
 							bool const isI30 = ah->NameLength == 4 && memcmp(ah->name(), _T("$I30"), sizeof(*ah->name()) * 4) == 0;
 							if (ah->Type == (isI30 ? ntfs::AttributeIndexAllocation : ntfs::AttributeIndexRoot))
@@ -1534,30 +1490,38 @@ public:
 							}
 							else if (!(isI30 && ah->Type == ntfs::AttributeBitmap))
 							{
-								StreamInfo info = StreamInfo();
-								if ((ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && isI30)
-								{
-									// Suppress name
-								}
-								else
-								{
-									info.name.offset = static_cast<unsigned int>(this->names.size());
-									info.name.length = static_cast<unsigned char>(ah->NameLength);
-									append(this->names, ah->name(), ah->NameLength);
-								}
-								info.type_name_id = static_cast<unsigned char>((ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && isI30 ? 0 : ah->Type >> (CHAR_BIT / 2));
-								info.length = ah->IsNonResident ? static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... */ : ah->NonResident.DataSize) : ah->Resident.ValueLength;
-								info.allocated = ah->IsNonResident ? ah->NonResident.CompressionUnit ? static_cast<file_size_type>(ah->NonResident.CompressedSize) : static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... should be looking at VCNs */ : ah->NonResident.AllocatedSize) : 0;
-								info.bulkiness = info.allocated;
-								info.descendents = 0;
 								if (StreamInfos::value_type *const si = this->streaminfo(&*base_record))
 								{
 									size_t const stream_index = this->streaminfos.size();
 									this->streaminfos.push_back(*si);
 									si->next_entry = static_cast<small_t<size_t>::type>(stream_index);
 								}
-								info.next_entry = base_record->first_stream.next_entry;
-								base_record->first_stream = info;
+								StreamInfo::next_entry_type const next_entry = base_record->first_stream.next_entry;
+								StreamInfo *const info = &base_record->first_stream;
+								if ((ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && isI30)
+								{
+									// Suppress name
+									info->name.offset = 0;
+									info->name.length = 0;
+								}
+								else
+								{
+									info->name.offset = static_cast<unsigned int>(this->names.size());
+									info->name.length = static_cast<unsigned char>(ah->NameLength);
+									append(this->names, ah->name(), ah->NameLength);
+								}
+								info->type_name_id = static_cast<unsigned char>((ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && isI30 ? 0 : ah->Type >> (CHAR_BIT / 2));
+								info->length = ah->IsNonResident ? static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... */ : ah->NonResident.DataSize) : ah->Resident.ValueLength;
+								info->allocated = ah->IsNonResident
+									? ah->NonResident.CompressionUnit
+										? static_cast<file_size_type>(ah->NonResident.CompressedSize)
+										: static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */
+											? ah->NonResident.InitializedSize /* actually this is still wrong... should be looking at VCNs */
+											: ah->NonResident.AllocatedSize)
+									: 0;
+								info->bulkiness = info->allocated;
+								info->descendents = 0;
+								info->next_entry = next_entry;
 								this->_total_names_and_streams += base_record->name_count;
 								++base_record->stream_count;
 							}
@@ -1580,24 +1544,9 @@ public:
 		this->_perf_reports_begin = (this->_perf_reports_begin + 1) % this->_perf_reports_circ.size();
 	}
 
-	void report_speed(unsigned long long const size, clock_t const duration) volatile
-	{
-		this_type *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->report_speed(size, duration);
-	}
-
-	size_t get_path(key_type key, std::tstring &result, bool const name_only) const volatile
-	{
-		this_type const *const me = this->unvolatile();
-		if (!name_only && WaitForSingleObject(me->_finished_event, 0) == WAIT_TIMEOUT)
-		{ return 0; }
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->get_path(key, result, name_only);
-	}
-
 	size_t get_path(key_type key, std::tstring &result, bool const name_only) const
 	{
+		if (false && !name_only && WaitForSingleObject(this->_finished_event, 0) == WAIT_TIMEOUT) { return 0; }
 		size_t const old_size = result.size();
 		bool leaf = true;
 		while (~key.frs)
@@ -1651,36 +1600,14 @@ public:
 		return result.size() - old_size;
 	}
 
-	size_info get_sizes(key_type const key) const volatile
-	{
-		this_type const *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->get_sizes(key);
-	}
-
 	size_info const &get_sizes(key_type const key) const
 	{
 		return (~key.direct_address < key.direct_address ? this->records_data[static_cast<key_type::direct_address_type>(~key.direct_address)].first_stream : *this->streaminfo(key.direct_address));
 	}
 
-	standard_info get_stdinfo(unsigned int const frn) const volatile
-	{
-		this_type const *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->get_stdinfo(frn);
-	}
-
 	standard_info const &get_stdinfo(unsigned int const frn) const
 	{
 		return this->find(frn)->stdinfo;
-	}
-
-	template<class F>
-	void matches(F func, std::tstring &path, bool const match_paths, bool const match_streams) const volatile
-	{
-		this_type const *const me = this->unvolatile();
-		lock_guard<mutex> const lock(me->_mutex);
-		return me->matches<F &>(func, path, match_paths, match_streams);
 	}
 
 	template<class F>
@@ -1801,6 +1728,7 @@ private:
 		}
 	};
 };
+NtfsIndex::ChildInfo const NtfsIndex::ChildInfo::empty;
 
 template<typename Str, typename S1, typename S2>
 void replace_all(Str &str, S1 from, S2 to)
@@ -2096,7 +2024,7 @@ public:
 		this->lastProgressTitle = title;
 	}
 
-	void SetProgressText(boost::iterator_range<TCHAR const *> const text)
+	void SetProgressText(std::tstring const &text)
 	{
 		this->invalidated |= !boost::equal(this->lastProgressText, text);
 		this->lastProgressText.assign(text.begin(), text.end());
@@ -2246,7 +2174,7 @@ public:
 				if (q->nbitmap_chunks_left.fetch_sub(1, atomic_namespace::memory_order_acq_rel) == 1)
 				{
 					unsigned int const valid_records = q->valid_records.exchange(0 /* make sure this doesn't happen twice */, atomic_namespace::memory_order_acq_rel);
-					q->p->reserve(valid_records);
+					lock(q->p)->reserve(valid_records);
 
 					// Now, go remove records from the queue that we know are invalid...
 					for (RetPtrs::iterator i = q->data_ret_ptrs.begin(); i != q->data_ret_ptrs.end(); ++i)
@@ -2279,10 +2207,10 @@ public:
 			}
 			else
 			{
-				q->p->load(this->voffset(), buffer, size, this->skipped_begin(), this->skipped_end());
+				lock(q->p)->load(this->voffset(), buffer, size, this->skipped_begin(), this->skipped_end());
 			}
 			{
-				q->p->report_speed(size, clock() - begin_time - this->time());
+				lock(q->p)->report_speed(size, clock() - begin_time - this->time());
 			}
 		}
 		return -1;
@@ -2762,27 +2690,30 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 		}
 	};
 
-	class RaiseIoPriority
+	class SetIoPriority
 	{
 		uintptr_t _volume;
 		winnt::FILE_IO_PRIORITY_HINT_INFORMATION _old;
-		RaiseIoPriority(RaiseIoPriority const &);
-		RaiseIoPriority &operator =(RaiseIoPriority const &);
+		SetIoPriority &operator =(SetIoPriority const &);
 	public:
 		static winnt::FILE_IO_PRIORITY_HINT_INFORMATION set(uintptr_t const volume, winnt::IO_PRIORITY_HINT const value)
 		{
 			winnt::FILE_IO_PRIORITY_HINT_INFORMATION old = {};
 			winnt::IO_STATUS_BLOCK iosb;
 			winnt::NtQueryInformationFile(reinterpret_cast<HANDLE>(volume), &iosb, &old, sizeof(old), 43);
-			winnt::FILE_IO_PRIORITY_HINT_INFORMATION io_priority = { value };
-			winnt::NtSetInformationFile(reinterpret_cast<HANDLE>(volume), &iosb, &io_priority, sizeof(io_priority), 43);
+			if (value != winnt::MaxIoPriorityTypes)
+			{
+				winnt::FILE_IO_PRIORITY_HINT_INFORMATION io_priority = { value };
+				winnt::NtSetInformationFile(reinterpret_cast<HANDLE>(volume), &iosb, &io_priority, sizeof(io_priority), 43);
+			}
 			return old;
 		}
 		uintptr_t volume() const { return this->_volume; }
-		RaiseIoPriority() : _volume(), _old() { }
-		explicit RaiseIoPriority(uintptr_t const volume) : _volume(volume), _old(set(volume, winnt::IoPriorityNormal)) { }
-		~RaiseIoPriority() { if (this->_volume) { set(this->_volume, this->_old.PriorityHint); } }
-		void swap(RaiseIoPriority &other) { using std::swap; swap(this->_volume, other._volume); swap(this->_old, other._old); }
+		SetIoPriority() : _volume(), _old() { }
+		SetIoPriority(SetIoPriority const &other) : _volume(other._volume), _old() { this->_old.PriorityHint = winnt::MaxIoPriorityTypes; }
+		explicit SetIoPriority(uintptr_t const volume, winnt::IO_PRIORITY_HINT const priority) : _volume(volume), _old(set(volume, priority)) { }
+		~SetIoPriority() { if (this->_volume) { set(this->_volume, this->_old.PriorityHint); } }
+		void swap(SetIoPriority &other) { using std::swap; swap(this->_volume, other._volume); swap(this->_old, other._old); }
 	};
 
 	template<class StrCmp>
@@ -2842,7 +2773,7 @@ public:
 	CMainDlg(HANDLE const hEvent) :
 		num_threads(static_cast<size_t>(get_num_threads())), indices_created(),
 		closing_event(CreateEvent(NULL, TRUE, FALSE, NULL)), iocp(CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0)),
-		threads(), nformat_ui(get_numpunct_locale(std::locale(""))), nformat_io(), time_zone_bias(), lcid(GetThreadLocale()), hWait(), hEvent(hEvent),
+		threads(), nformat_ui(get_numpunct_locale(std::locale(""))), nformat_io(std::locale()), time_zone_bias(), lcid(GetThreadLocale()), hWait(), hEvent(hEvent),
 		iconLoader(BackgroundWorker::create(true)), lastRequestedIcon(), hRichEdit(), autocomplete_called(false), _small_image_list(),
 		deletedColor(RGB(0xFF, 0, 0)), encryptedColor(RGB(0, 0xFF, 0)), compressedColor(RGB(0, 0, 0xFF)), suppress_escapes(0)
 	{
@@ -2923,7 +2854,9 @@ public:
 			bool operator()()
 			{
 				WTL::CWaitCursor wait(true, IDC_APPSTARTING);
+				std::reverse(path.begin(), path.end());
 				CMainDlg::CacheInfo &cached = this_->cache[path];
+				std::reverse(path.begin(), path.end());
 				_tcscpy(cached.szTypeName, this->szTypeName);
 				cached.description = description;
 
@@ -3032,12 +2965,14 @@ public:
 	int CacheIcon(std::tstring path, int const iItem, ULONG fileAttributes, bool lifo)
 	{
 		remove_path_stream_and_trailing_sep(path);
+		std::reverse(path.begin(), path.end());
 		if (this->cache.find(path) == this->cache.end())
 		{
 			this->cache[path] = CacheInfo();
 		}
 
 		CacheInfo const &entry = this->cache[path];
+		std::reverse(path.begin(), path.end());
 
 		if (!entry.valid && this->lastRequestedIcon != path)
 		{
@@ -3415,7 +3350,12 @@ public:
 		if (any_io_pending) { dlg.ForceShow(); }
 		try { this->results.reserve(this->results.size() + expected_results + expected_results / 8); }
 		catch (std::bad_alloc &) { }
-		RaiseIoPriority set_priority;
+		std::vector<SetIoPriority> set_priorities(wait_indices.size());
+		for (size_t i = 0; i != wait_indices.size(); ++i)
+		{
+			// SetIoPriority(reinterpret_cast<uintptr_t>(wait_indices[i]->volume()), winnt::IoPriorityLow).swap(set_priorities[i]);
+		}
+		SetIoPriority set_priority;
 		Speed::second_type initial_time = Speed::second_type();
 		Speed::first_type initial_average_amount = Speed::first_type();
 		while (!dlg.HasUserCancelled() && !wait_handles.empty())
@@ -3423,7 +3363,7 @@ public:
 			if (uintptr_t const volume = reinterpret_cast<uintptr_t>(wait_indices.at(0)->volume()))
 			{
 				if (set_priority.volume() != volume)
-				{ RaiseIoPriority(volume).swap(set_priority); }
+				{ SetIoPriority(volume, winnt::IoPriorityHigh).swap(set_priority); }
 			}
 			unsigned long const wait_result = dlg.WaitMessageLoop(wait_handles.empty() ? NULL : &*wait_handles.begin(), wait_handles.size());
 			if (wait_result == WAIT_TIMEOUT)
@@ -3443,7 +3383,7 @@ public:
 						{
 							if (any) { ss << _T(", "); }
 							else { ss << _T(" "); }
-							ss << j->root_path() << _T(" ") << _T("(") << nformat_ui(records_so_far);
+							ss << lock(j)->root_path() << _T(" ") << _T("(") << nformat_ui(records_so_far);
 							ss << _T(" of ");
 							// These MUST be separate statements since nformat_ui is used twice
 							ss << nformat_ui(j->mft_capacity) << _T(")");
@@ -3456,7 +3396,7 @@ public:
 					{
 						Results::value_type::first_type const j = initial_wait_indices[i];
 						{
-							Speed const speed = j->speed();
+							Speed const speed = lock(j)->speed();
 							average_speed.first += speed.first;
 							average_speed.second += speed.second;
 							if (initial_speed)
@@ -3479,7 +3419,7 @@ public:
 						ss << _T("(") << nformat_ui(average_speed.first / (1 << 20)) << _T(" MiB read)");
 					}
 					std::tstring const text = ss.str();
-					dlg.SetProgressText(boost::iterator_range<TCHAR const *>(text.data(), text.data() + text.size()));
+					dlg.SetProgressText(text);
 					dlg.SetProgress(static_cast<long long>(temp_overall_progress_numerator), static_cast<long long>(overall_progress_denominator));
 					dlg.Flush();
 				}
@@ -3492,13 +3432,13 @@ public:
 					results_at_depths.reserve(std::numeric_limits<unsigned short>::max() + 1);
 					Results::value_type::first_type const i = wait_indices[wait_result];
 					size_t current_progress_numerator = 0;
-					size_t const current_progress_denominator = i->total_names_and_streams();
-					std::tstring const root_path = i->root_path();
+					size_t const current_progress_denominator = lock(i)->total_names_and_streams();
+					std::tstring const root_path = lock(i)->root_path();
 					std::tstring current_path = root_path;
 					while (!current_path.empty() && *(current_path.end() - 1) == _T('\\')) { current_path.erase(current_path.end() - 1); }
 					try
 					{
-						i->matches([&dlg, is_path_pattern, &results_at_depths, &root_path, &pattern, is_regex, shift_pressed, ctrl_pressed, this, i, &wait_indices, any_io_pending,
+						lock(i)->matches([&dlg, is_path_pattern, &results_at_depths, &root_path, &pattern, is_regex, shift_pressed, ctrl_pressed, this, i, &wait_indices, any_io_pending,
 							&current_progress_numerator, current_progress_denominator,
 							overall_progress_numerator, overall_progress_denominator
 #ifdef BOOST_XPRESSIVE_DYNAMIC_HPP_EAN
@@ -3527,7 +3467,7 @@ public:
 									static_cast<std::tstring>(nformat_ui(current_progress_numerator)).c_str(),
 									static_cast<std::tstring>(nformat_ui(current_progress_denominator)).c_str(),
 									static_cast<int>(path.second - path.first), path.first == path.second ? NULL : &*path.first)));
-								dlg.SetProgressText(boost::iterator_range<TCHAR const *>(text.data(), text.data() + text.size()));
+								dlg.SetProgressText(text);
 								dlg.SetProgress(temp_overall_progress_numerator + static_cast<unsigned long long>(i->mft_capacity) * static_cast<unsigned long long>(current_progress_numerator) / static_cast<unsigned long long>(current_progress_denominator), static_cast<long long>(overall_progress_denominator));
 								dlg.Flush();
 							}
@@ -3546,7 +3486,7 @@ public:
 							if (match)
 							{
 								Results::value_type::third_type depth2 = static_cast<Results::value_type::third_type>(depth * 4) /* dividing by 2 later should not mess up the actual depths; it should only affect files vs. directory sub-depths */;
-								if (ctrl_pressed && !(i->get_stdinfo(key.frs).attributes & FILE_ATTRIBUTE_DIRECTORY)) { ++depth2; }
+								if (ctrl_pressed && !(lock(i)->get_stdinfo(key.frs).attributes & FILE_ATTRIBUTE_DIRECTORY)) { ++depth2; }
 								Results *to_insert_in = &this->results;
 								if (shift_pressed)
 								{
@@ -3638,35 +3578,35 @@ public:
 			HWND prev_hwnd;
 			ATOM prev_atom;
 			HANDLE prev_result;
-			NtUserGetProp_with_context_t *NtUserGetProp_old;
-			NtUserSetProp_with_context_t *NtUserSetProp_old;
+			Hook_NtUserGetProp::type *NtUserGetProp_old;
+			Hook_NtUserSetProp::type *NtUserSetProp_old;
 			Hooked() : old_s_hook(s_hook), prev_hwnd(), prev_atom(), prev_result()
 			{
 				s_hook = this;
-				this->NtUserGetProp_old = NtUserGetProp_thread; NtUserGetProp_thread = NtUserGetProp;
-				this->NtUserSetProp_old = NtUserSetProp_thread; NtUserSetProp_thread = NtUserSetProp;
+				this->NtUserGetProp_old = Hook_NtUserGetProp::thread(NtUserGetProp);
+				this->NtUserSetProp_old = Hook_NtUserSetProp::thread(NtUserSetProp);
 			}
 			~Hooked()
 			{
-				NtUserSetProp_thread = this->NtUserSetProp_old;
-				NtUserGetProp_thread = this->NtUserGetProp_old;
+				Hook_NtUserSetProp::thread(this->NtUserSetProp_old);
+				Hook_NtUserGetProp::thread(this->NtUserGetProp_old);
 				s_hook = old_s_hook;
 			}
-			static HANDLE __stdcall NtUserGetProp(HWND hWnd, ATOM PropId, NtUserGetProp_t *const old)
+			static HANDLE __stdcall NtUserGetProp(HWND hWnd, ATOM PropId)
 			{
 				Hooked *const hook = static_cast<Hooked *>(s_hook);
 				if (hook->prev_hwnd != hWnd || hook->prev_atom != PropId)
 				{
-					hook->prev_result = old(hWnd, PropId);
+					hook->prev_result = Hook::base(hook_NtUserGetProp)(hWnd, PropId);
 					hook->prev_hwnd = hWnd;
 					hook->prev_atom = PropId;
 				}
 				return hook->prev_result;
 			}
-			static BOOL __stdcall NtUserSetProp(HWND hWnd, ATOM PropId, HANDLE value, NtUserSetProp_t *const old)
+			static BOOL __stdcall NtUserSetProp(HWND hWnd, ATOM PropId, HANDLE value)
 			{
 				Hooked *const hook = static_cast<Hooked *>(s_hook);
-				BOOL const result = old(hWnd, PropId, value);
+				BOOL const result = Hook::thread(hook_NtUserSetProp)(hWnd, PropId, value);
 				if (result && hook->prev_hwnd == hWnd && hook->prev_atom == PropId)
 				{
 					hook->prev_result = value;
@@ -3945,7 +3885,7 @@ public:
 									ss << std::endl;
 									ss << text_buffer;
 									std::tstring const &text = ss.str();
-									dlg.SetProgressText(boost::iterator_range<TCHAR const *>(text.data(), text.data() + text.size()));
+									dlg.SetProgressText(text);
 									dlg.SetProgress(static_cast<long long>(i), static_cast<long long>(results.size()));
 									dlg.Flush();
 								}
@@ -4013,7 +3953,7 @@ public:
 		Results::value_type const &result = this->results[static_cast<size_t>(index)];
 		Results::value_type::first_type const &i = result.index;
 		std::tstring path;
-		path = i->root_path(), i->get_path(result.key, path, false);
+		path = lock(i)->root_path(), lock(i)->get_path(result.key, path, false);
 		remove_path_stream_and_trailing_sep(path);
 		std::auto_ptr<std::pair<std::pair<CShellItemIDList, ATL::CComPtr<IShellFolder> >, std::vector<CShellItemIDList> > > p(
 			new std::pair<std::pair<CShellItemIDList, ATL::CComPtr<IShellFolder> >, std::vector<CShellItemIDList> >());
@@ -4095,9 +4035,10 @@ public:
 		return 0;
 	}
 
-	template<class Index>
-	void GetSubItemText_impl(Index *const i, Results::value_type::second_type const key, int const subitem, bool const for_ui, std::tstring &text, bool const lock_index = true)
+	void GetSubItemText(Results::value_type const &result, int const subitem, bool const for_ui, std::tstring &text, bool const lock_index = true)
 	{
+		lock_ptr<NtfsIndex const> i(result.index, lock_index);
+		Results::value_type::second_type const key = result.key;
 		text.erase(text.begin(), text.end());
 		NumberFormatter &nformat = for_ui ? nformat_ui : nformat_io;
 		long long svalue;
@@ -4114,13 +4055,6 @@ public:
 		case COLUMN_INDEX_DESCENDENTS      : uvalue = static_cast<unsigned long long>(i->get_sizes(key).descendents); if (uvalue) { text = nformat(uvalue); } else { text.erase(text.begin(), text.end()); } break;
 		default: break;
 		}
-	}
-
-	void GetSubItemText(Results::value_type const &result, int const subitem, bool const for_ui, std::tstring &text, bool const lock_index = true)
-	{
-		lock_index
-			? this->GetSubItemText_impl(result.index, result.key, subitem, for_ui, text)
-			: this->GetSubItemText_impl(const_cast<NtfsIndex const *>(result.index), result.key, subitem, for_ui, text);
 	}
 
 	LRESULT OnFilesIncrementalSearch(LPNMHDR pnmh)
@@ -4196,7 +4130,7 @@ public:
 			if (!text.empty()) { _tcsncpy(pLV->item.pszText, text.c_str(), pLV->item.cchTextMax); }
 			if (pLV->item.iSubItem == 0)
 			{
-				int iImage = this->CacheIcon(path, static_cast<int>(pLV->item.iItem), i->get_stdinfo(result.key.frs).attributes, true);
+				int iImage = this->CacheIcon(path, static_cast<int>(pLV->item.iItem), lock(i)->get_stdinfo(result.key.frs).attributes, true);
 				if (iImage >= 0) { pLV->item.iImage = iImage; }
 			}
 		}
@@ -4237,7 +4171,7 @@ public:
 		{
 			Results::value_type const &item = this->results[static_cast<size_t>(pLV->nmcd.dwItemSpec)];
 			Results::value_type::first_type const &i = item.index;
-			unsigned long const attrs = i->get_stdinfo(item.key.frs).attributes;
+			unsigned long const attrs = lock(i)->get_stdinfo(item.key.frs).attributes;
 			switch (pLV->nmcd.dwDrawStage)
 			{
 			case CDDS_PREPAINT:

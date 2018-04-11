@@ -42,6 +42,33 @@ extern "C"
 #ifndef _CSTD
 #	define _CSTD ::std::
 #endif
+
+#if __cplusplus >= 201103L || defined(__GXX_EXPERIMENTAL_CXX0X__) || defined(_MSC_VER) && _MSC_VER >= 1600
+#define X_HAS_MOVE_SEMANTICS
+#elif defined(__clang)
+#if __has_feature(cxx_rvalue_references)
+#define X_HAS_MOVE_SEMANTICS
+#endif
+#endif
+#ifdef  X_HAS_MOVE_SEMANTICS
+namespace std
+{
+	template<class T> struct add_rvalue_reference { typedef T type; };
+	template<> struct add_rvalue_reference<void> { typedef void type; };
+	template<> struct add_rvalue_reference<void const> { typedef void const type; };
+	template<> struct add_rvalue_reference<void volatile> { typedef void volatile type; };
+	template<> struct add_rvalue_reference<void const volatile> { typedef void const volatile type; };
+	template<class T> struct remove_reference       { typedef T type; };
+	template<class T> struct remove_reference<T &>  { typedef T type; };
+	template<class T> struct remove_reference<T &&> { typedef T type; };
+	template<class T>
+	typename remove_reference<T>::type &&move(T &&value) /*noexcept*/ { return static_cast<typename remove_reference<T>::type &&>(value); } 
+	template<class T> /* TODO: WARN: technically this is a wrong implementation... if is_function<T>::value || is_void<T>::value, it should not add an r-value reference at all */
+	typename T &&declval() /*noexcept*/;
+}
+#undef  X_HAS_MOVE_SEMANTICS
+#endif
+
 namespace std { template<class C, class T, class D = ptrdiff_t, class P = T *, class R = void> struct iterator; }
 #define iterator iterator_bad
 #define inserter inserter_bad
@@ -172,6 +199,18 @@ namespace std
 
 	template<class It>
 	inline typename iterator_traits<It>::iterator_category __cdecl _Iter_cat(It const &) { return iterator_traits<It>::iterator_category(); }
+}
+
+namespace boost
+{
+	namespace iterators
+	{
+		namespace detail
+		{
+			template<class C, class T, class D, class P, class R>
+			struct iterator : public std::iterator<C, T, D, P, R> { };
+		}
+	}
 }
 
 // std::allocator::rebind doesn't exist!!
@@ -447,7 +486,73 @@ using std::codecvt;
 
 #pragma warning(push)
 #pragma warning(disable: 4512)  // assignment operator could not be generated
+#define set set_bad
+#define multiset multiset_bad
 #include <set>
+#undef  multiset
+#undef  set
+namespace std
+{
+	template<class K, class Pr = less<K>, class Ax = allocator<K> >
+	class set : public set_bad<K, Pr, Ax>
+	{
+		typedef set this_type;
+		typedef set_bad<K, Pr, Ax> base_type;
+	public:
+		explicit set(Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { }
+		set(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax)
+		template<class It> set(It const &first, It const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { this->insert<It>(first, last); }
+		using base_type::insert;
+		template<class It> void insert(It const &first, It const &last) { for (It i = first; i != last; ++i) { this->base_type::insert(*i); } }
+	};
+	template<class K, class Pr = less<K>, class Ax = allocator<K> >
+	class multiset : public multiset_bad<K, Pr, Ax>
+	{
+		typedef multiset this_type;
+		typedef multiset_bad<K, Pr, Ax> base_type;
+	public:
+		explicit multiset(Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { }
+		multiset(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax)
+		template<class It> multiset(It const &first, It const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { this->insert<It>(first, last); }
+		using base_type::insert;
+		template<class It> void insert(It const &first, It const &last) { for (It i = first; i != last; ++i) { this->base_type::insert(*i); } }
+	};
+}
+#pragma warning(pop)
+
+#pragma warning(push)
+#define map map_bad
+#define multimap multimap_bad
+#include <map>
+#undef  multimap
+#undef  map
+namespace std
+{
+	template<class K, class V, class Pr = less<K>, class Ax = allocator<V> >
+	class map : public map_bad<K, V, Pr, Ax>
+	{
+		typedef map this_type;
+		typedef map_bad<K, V, Pr, Ax> base_type;
+	public:
+		explicit map(Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { }
+		map(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax)
+		template<class It> map(It const &first, It const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { this->insert<It>(first, last); }
+		using base_type::insert;
+		template<class It> void insert(It const &first, It const &last) { for (It i = first; i != last; ++i) { this->base_type::insert(*i); } }
+	};
+	template<class K, class V, class Pr = less<K>, class Ax = allocator<V> >
+	class multimap : public multimap_bad<K, V, Pr, Ax>
+	{
+		typedef multimap this_type;
+		typedef multimap_bad<K, V, Pr, Ax> base_type;
+	public:
+		explicit multimap(Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { }
+		multimap(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax)
+		template<class It> multimap(It const &first, It const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { this->insert<It>(first, last); }
+		using base_type::insert;
+		template<class It> void insert(It const &first, It const &last) { for (It i = first; i != last; ++i) { this->base_type::insert(*i); } }
+	};
+}
 #pragma warning(pop)
 
 #pragma push_macro("min")

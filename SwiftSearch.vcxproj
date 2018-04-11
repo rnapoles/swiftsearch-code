@@ -264,6 +264,7 @@ Echo Embedding 64-bit version...&amp;&amp; Path %PATH%;%ProgramFiles%\Resource H
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="nformat.hpp" />
+    <ClInclude Include="NtUserCallHook.hpp" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="targetver.h" />

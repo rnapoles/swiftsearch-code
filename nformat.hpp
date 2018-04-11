@@ -88,8 +88,10 @@ class NumberFormatter
 	SS ss;
 	bool ascii;
 public:
-	NumberFormatter() : ascii(true) { }
-	explicit NumberFormatter(std::locale const &loc) : ascii(false) { this->ss.imbue(loc); }
+	explicit NumberFormatter(std::locale const &loc) : ascii(false)
+	{
+		this->ss.imbue(loc);
+	}
 
 #ifdef _M_X64
 	static unsigned int base_10_digits(unsigned long long x)
@@ -153,25 +155,9 @@ public:
 	template<class V>
 	static void format_fast_ascii_append(std::basic_string<TCHAR> &result, V value, size_t const min_width);
 
-	template<class T>
-	std::basic_string<TCHAR> const &operator()(T v)
-	{
-		if (this->ascii)
-		{
-			result.erase(result.begin(), result.end());
-			this->format_fast_ascii_append<T>(result, v, 0);
-		}
-		else
-		{
-			ss.str(std::basic_string<TCHAR>());
-			ss.clear();
-			ss << v;
-			ss.seekg(0);
-			ss >> result;
-		}
-		return result;
-	}
+	std::basic_string<TCHAR> const &operator()(unsigned long long v);
 };
+
 
 template<class V>
 inline void NumberFormatter::format_fast_ascii_append(std::basic_string<TCHAR> &result, V value, size_t const min_width)
@@ -206,5 +192,23 @@ inline void NumberFormatter::format_fast_ascii_append<unsigned long long>(std::b
 	}
 }
 #endif
+
+inline std::basic_string<TCHAR> const &NumberFormatter::operator()(unsigned long long v)
+{
+	if (this->ascii)
+	{
+		result.erase(result.begin(), result.end());
+		this->format_fast_ascii_append(result, v, 0);
+	}
+	else
+	{
+		ss.str(std::basic_string<TCHAR>());
+		ss.clear();
+		ss << v;
+		ss.seekg(0);
+		ss >> result;
+	}
+	return result;
+}
 
 #endif
