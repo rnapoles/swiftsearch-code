@@ -1101,8 +1101,36 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	};
 	struct StandardInfo
 	{
-		unsigned long long created, written, accessed;
-		unsigned long attributes;
+		unsigned long long
+			created,
+			written,
+			accessed : 0x40 - 6,
+			is_system : 1,
+			is_directory : 1,
+			is_sparse : 1,
+			is_compressed : 1,
+			is_encrypted : 1,
+			is_reparse : 1;
+
+		unsigned long attributes() const
+		{
+			return (this->is_system ? FILE_ATTRIBUTE_SYSTEM : 0U) |
+				(this->is_directory ? FILE_ATTRIBUTE_DIRECTORY : 0U) |
+				(this->is_sparse ? FILE_ATTRIBUTE_SPARSE_FILE : 0U) |
+				(this->is_compressed ? FILE_ATTRIBUTE_COMPRESSED : 0U) |
+				(this->is_encrypted ? FILE_ATTRIBUTE_ENCRYPTED : 0U) |
+				(this->is_reparse ? FILE_ATTRIBUTE_REPARSE_POINT : 0U);
+		}
+
+		void attributes(unsigned long const value)
+		{
+			this->is_system = !!(value & FILE_ATTRIBUTE_SYSTEM);
+			this->is_directory = !!(value & FILE_ATTRIBUTE_DIRECTORY);
+			this->is_sparse = !!(value & FILE_ATTRIBUTE_SPARSE_FILE);
+			this->is_compressed = !!(value & FILE_ATTRIBUTE_COMPRESSED);
+			this->is_encrypted = !!(value & FILE_ATTRIBUTE_ENCRYPTED);
+			this->is_reparse = !!(value & FILE_ATTRIBUTE_REPARSE_POINT);
+		}
 	};
 	struct SizeInfo
 	{
@@ -1150,13 +1178,12 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	struct Record
 	{
 		StandardInfo stdinfo;
-		unsigned short name_count, stream_count;
+		unsigned short name_count /* <= 1024 < 2048 */, stream_count /* <= 4106? < 8192 */;
 		ChildInfos::value_type::next_entry_type first_child;
 		LinkInfos::value_type first_name;
 		StreamInfos::value_type first_stream;
 		Record() : stdinfo(), name_count(), stream_count(), first_name(), first_stream(), first_child(negative_one)
 		{
-			this->stdinfo.attributes = negative_one;
 			this->first_stream.name.offset = negative_one;
 			this->first_stream.next_entry = negative_one;
 		}
@@ -1435,7 +1462,7 @@ public:
 							base_record->stdinfo.created = fn->CreationTime;
 							base_record->stdinfo.written = fn->LastModificationTime;
 							base_record->stdinfo.accessed = fn->LastAccessTime;
-							base_record->stdinfo.attributes = fn->FileAttributes | ((frsh->Flags & ntfs::FRH_DIRECTORY) ? FILE_ATTRIBUTE_DIRECTORY : 0);
+							base_record->stdinfo.attributes(fn->FileAttributes | ((frsh->Flags & ntfs::FRH_DIRECTORY) ? FILE_ATTRIBUTE_DIRECTORY : 0));
 						}
 						break;
 					case ntfs::AttributeFileName:
@@ -1698,7 +1725,7 @@ private:
 					}
 					if (match_paths || match_streams)
 					{
-						if ((fr->stdinfo.attributes & FILE_ATTRIBUTE_DIRECTORY) && frs != 0x00000005)
+						if ((fr->stdinfo.attributes() & FILE_ATTRIBUTE_DIRECTORY) && frs != 0x00000005)
 						{
 							*path += _T('\\');
 						}
@@ -3486,7 +3513,7 @@ public:
 							if (match)
 							{
 								Results::value_type::third_type depth2 = static_cast<Results::value_type::third_type>(depth * 4) /* dividing by 2 later should not mess up the actual depths; it should only affect files vs. directory sub-depths */;
-								if (ctrl_pressed && !(lock(i)->get_stdinfo(key.frs).attributes & FILE_ATTRIBUTE_DIRECTORY)) { ++depth2; }
+								if (ctrl_pressed && !(lock(i)->get_stdinfo(key.frs).attributes() & FILE_ATTRIBUTE_DIRECTORY)) { ++depth2; }
 								Results *to_insert_in = &this->results;
 								if (shift_pressed)
 								{
@@ -3836,8 +3863,7 @@ public:
 			if (GetSaveFileName(&fdlg.m_ofn))
 			{
 				typedef tchar_ci_traits char_traits;
-				std::tstring const fileext = fdlg.m_ofn.nFileExtension ? &fdlg.m_ofn.lpstrFile[fdlg.m_ofn.nFileExtension] : _T("");
-				bool const tabsep = fileext.size() == 3 && char_traits::compare(fileext.data(), _T("tsv"), fileext.size()) == 0;
+				bool const tabsep = fdlg.m_ofn.nFilterIndex > 1;
 				WTL::CWaitCursor wait;
 				int const ncolumns = this->lvFiles.GetHeader().GetItemCount();
 				File const output = { _topen(fdlg.m_ofn.lpstrFile, _O_BINARY | _O_TRUNC | _O_CREAT | _O_RDWR | _O_SEQUENTIAL, _S_IREAD | _S_IWRITE) };
@@ -3894,7 +3920,8 @@ public:
 							// NOTE: We assume there are no double-quotes here, so we don't handle escaping for that! This is a valid assumption for this program.
 							if (tabsep)
 							{
-								if (text_buffer.find(_T('\t')) != std::tstring::npos)
+								bool may_contain_tabs = false;
+								if (may_contain_tabs && text_buffer.find(_T('\t')) != std::tstring::npos)
 								{
 									text_buffer.insert(text_buffer.begin(), 1, _T('\"'));
 									text_buffer.insert(text_buffer.end(), 1, _T('\"'));
@@ -4046,13 +4073,13 @@ public:
 		switch (subitem)
 		{
 		case COLUMN_INDEX_NAME             : i->get_path(key, text, true); deldirsep(text); break;
-		case COLUMN_INDEX_PATH             : text = i->root_path(); i->get_path(key, text, false); break;
-		case COLUMN_INDEX_SIZE             : uvalue = static_cast<unsigned long long>(i->get_sizes(key).length   ); text = nformat(uvalue); break;
-		case COLUMN_INDEX_SIZE_ON_DISK     : uvalue = static_cast<unsigned long long>(i->get_sizes(key).allocated); text = nformat(uvalue); break;
-		case COLUMN_INDEX_CREATION_TIME    : svalue = i->get_stdinfo(key.frs).created ; SystemTimeToString(svalue, text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
-		case COLUMN_INDEX_MODIFICATION_TIME: svalue = i->get_stdinfo(key.frs).written ; SystemTimeToString(svalue, text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
-		case COLUMN_INDEX_ACCESS_TIME      : svalue = i->get_stdinfo(key.frs).accessed; SystemTimeToString(svalue, text, !for_ui); text.erase(std::find(text.begin(), text.end(), _T('\0')), text.end()); break;
-		case COLUMN_INDEX_DESCENDENTS      : uvalue = static_cast<unsigned long long>(i->get_sizes(key).descendents); if (uvalue) { text = nformat(uvalue); } else { text.erase(text.begin(), text.end()); } break;
+		case COLUMN_INDEX_PATH             : text.append(i->root_path()); i->get_path(key, text, false); break;
+		case COLUMN_INDEX_SIZE             : uvalue = static_cast<unsigned long long>(i->get_sizes(key).length   ); text.append(nformat(uvalue)); break;
+		case COLUMN_INDEX_SIZE_ON_DISK     : uvalue = static_cast<unsigned long long>(i->get_sizes(key).allocated); text.append(nformat(uvalue)); break;
+		case COLUMN_INDEX_CREATION_TIME    : svalue = i->get_stdinfo(key.frs).created ; SystemTimeToString(svalue, text, !for_ui); { std::tstring::iterator end = text.end(); text.erase(std::find(text.begin(), end, _T('\0')), end); } break;
+		case COLUMN_INDEX_MODIFICATION_TIME: svalue = i->get_stdinfo(key.frs).written ; SystemTimeToString(svalue, text, !for_ui); { std::tstring::iterator end = text.end(); text.erase(std::find(text.begin(), end, _T('\0')), end); } break;
+		case COLUMN_INDEX_ACCESS_TIME      : svalue = i->get_stdinfo(key.frs).accessed; SystemTimeToString(svalue, text, !for_ui); { std::tstring::iterator end = text.end(); text.erase(std::find(text.begin(), end, _T('\0')), end); } break;
+		case COLUMN_INDEX_DESCENDENTS      : uvalue = static_cast<unsigned long long>(i->get_sizes(key).descendents); if (uvalue) { text.append(nformat(uvalue)); } break;
 		default: break;
 		}
 	}
@@ -4130,7 +4157,7 @@ public:
 			if (!text.empty()) { _tcsncpy(pLV->item.pszText, text.c_str(), pLV->item.cchTextMax); }
 			if (pLV->item.iSubItem == 0)
 			{
-				int iImage = this->CacheIcon(path, static_cast<int>(pLV->item.iItem), lock(i)->get_stdinfo(result.key.frs).attributes, true);
+				int iImage = this->CacheIcon(path, static_cast<int>(pLV->item.iItem), lock(i)->get_stdinfo(result.key.frs).attributes(), true);
 				if (iImage >= 0) { pLV->item.iImage = iImage; }
 			}
 		}
@@ -4171,7 +4198,7 @@ public:
 		{
 			Results::value_type const &item = this->results[static_cast<size_t>(pLV->nmcd.dwItemSpec)];
 			Results::value_type::first_type const &i = item.index;
-			unsigned long const attrs = lock(i)->get_stdinfo(item.key.frs).attributes;
+			unsigned long const attrs = lock(i)->get_stdinfo(item.key.frs).attributes();
 			switch (pLV->nmcd.dwDrawStage)
 			{
 			case CDDS_PREPAINT:
@@ -4535,7 +4562,7 @@ public:
 		NOTIFY_HANDLER_EX(IDC_LISTFILES, NM_DBLCLK, OnFilesDoubleClick)
 		NOTIFY_HANDLER_EX(IDC_EDITFILENAME, CSearchPattern::CUN_KEYDOWN, OnFileNameArrowKey)
 		NOTIFY_HANDLER_EX(IDC_LISTFILES, LVN_KEYDOWN, OnFilesKeyDown)
-		END_MSG_MAP()
+	END_MSG_MAP()
 
 	BEGIN_DLGRESIZE_MAP(CMainDlg)
 		DLGRESIZE_CONTROL(IDC_LISTFILES, DLSZ_SIZE_X | DLSZ_SIZE_Y)

@@ -99,8 +99,10 @@ public:
 		{
 			if (*this->ptr)
 			{
-				this->unset_hook();
-				*this->ptr = 0;
+				if (this->unset_hook())
+				{
+					*this->ptr = 0;
+				}
 			}
 			this->ptr = 0;
 		}
@@ -123,7 +125,7 @@ public:
 		Hook_##Name() { }  \
 		static char const *name() { return HOOK_STRINGIZE(Name); }  \
 		typedef ReturnType type Params;  \
-		using Hook::thread; \
+		using Hook::thread;  \
 		template<class F>  \
 		static F &thread() { __declspec(thread) static F f = NULL; return f; };  \
 		template<class F>  \
