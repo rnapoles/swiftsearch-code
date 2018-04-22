@@ -2446,6 +2446,10 @@ public:
 		result.check_same_buffer(other);
 		return result;
 	}
+	LPTSTR data()
+	{
+		return this->base_type::GetBuffer(this->base_type::GetLength());
+	}
 	LPTSTR c_str()
 	{
 		int const n = this->base_type::GetLength();
@@ -2460,10 +2464,7 @@ public:
 	{
 		return this->c_str();
 	}
-	friend std::basic_ostream<TCHAR> &operator<<(std::basic_ostream<TCHAR> &ss, this_type &me)
-	{
-		return ss << me.c_str();
-	}
+	friend std::basic_ostream<TCHAR> &operator<<(std::basic_ostream<TCHAR> &ss, this_type &me);  // Do NOT implement this. Turns out DDK's implementation doesn't handle embedded null characters correctly. Just use a basic_string directly instead.
 };
 
 class StringLoader
@@ -2500,6 +2501,7 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	};
 #endif
 
+	typedef basic_iterator_ios<std::back_insert_iterator<std::tstring>, std::tstring::traits_type> NFormat;
 	struct CThemedListViewCtrl : public WTL::CListViewCtrl, public WTL::CThemeImpl<CThemedListViewCtrl> { using WTL::CListViewCtrl::Attach; };
 	class Threads : public std::vector<uintptr_t>
 	{
@@ -2851,7 +2853,7 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	Handle closing_event;
 	Handle iocp;
 	Threads threads;
-	NumberFormatter nformat_ui, nformat_io;
+	NFormat nformat_ui, nformat_io;
 	long long time_zone_bias;
 	LCID lcid;
 	HANDLE hWait, hEvent;
@@ -2884,7 +2886,7 @@ public:
 	CMainDlg(HANDLE const hEvent) :
 		num_threads(static_cast<size_t>(get_num_threads())), indices_created(),
 		closing_event(CreateEvent(NULL, TRUE, FALSE, NULL)), iocp(CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0)),
-		threads(), nformat_ui(get_numpunct_locale(std::locale(""))), nformat_io(std::locale()), time_zone_bias(), lcid(GetThreadLocale()), hWait(), hEvent(hEvent),
+		threads(), nformat_ui(std::locale("")), nformat_io(std::locale()), time_zone_bias(), lcid(GetThreadLocale()), hWait(), hEvent(hEvent),
 		iconLoader(BackgroundWorker::create(true)), lastRequestedIcon(), hRichEdit(), autocomplete_called(false), _small_image_list(),
 		deletedColor(RGB(0xFF, 0, 0)), encryptedColor(RGB(0, 0xFF, 0)), compressedColor(RGB(0, 0, 0xFF)), suppress_escapes(0)
 	{
@@ -3481,7 +3483,7 @@ public:
 			{
 				if (dlg.ShouldUpdate())
 				{
-					std::basic_ostringstream<TCHAR> ss;
+					basic_fast_ostringstream<TCHAR> ss;
 					ss << this->LoadString(IDS_TEXT_READING_FILE_TABLES) << this->LoadString(IDS_TEXT_SPACE);
 					bool any = false;
 					size_t temp_overall_progress_numerator = overall_progress_numerator;
@@ -3524,7 +3526,7 @@ public:
 					}
 					if (average_speed.first > initial_average_amount)
 					{
-						ss << std::endl;
+						ss << _T('\n');
 						ss << this->LoadString(IDS_TEXT_AVERAGE_SPEED) << this->LoadString(IDS_TEXT_COLON) << this->LoadString(IDS_TEXT_SPACE)
 							<< nformat_ui(static_cast<size_t>((average_speed.first - initial_average_amount) * static_cast<double>(CLOCKS_PER_SEC) / ((tnow - initial_time) * (1ULL << 20))))
 							<< this->LoadString(IDS_TEXT_SPACE) << this->LoadString(IDS_TEXT_MIB_S);
@@ -3646,7 +3648,7 @@ public:
 		}
 		clock_t const end = clock();
 		TCHAR buf[0x100];
-		_stprintf(buf, _T("%s results in %.2lf seconds"), nformat_ui(this->results.size()).c_str(), (end - start) * 1.0 / CLOCKS_PER_SEC);
+		_stprintf(buf, _T("%s results in %.2lf seconds"), static_cast<std::tstring>(nformat_ui(this->results.size())).c_str(), (end - start) * 1.0 / CLOCKS_PER_SEC);
 		this->statusbar.SetText(0, buf);
 	}
 
@@ -3921,7 +3923,7 @@ public:
 		{
 			{
 				RefCountedCString text = this->LoadString(IDS_MENU_FILE_NUMBER);
-				text += nformat_ui(this->results[static_cast<size_t>(focused)].key.frs).c_str();
+				text += static_cast<std::tstring>(nformat_ui(this->results[static_cast<size_t>(focused)].key.frs)).c_str();
 				MENUITEMINFO mii = { sizeof(mii), MIIM_ID | MIIM_STRING | MIIM_STATE, MFT_STRING, MFS_DISABLED, fileIdId, NULL, NULL, NULL, NULL, text };
 				menu.InsertMenuItem(ninserted++, TRUE, &mii);
 			}
@@ -3954,11 +3956,18 @@ public:
 		{
 			std::basic_string<TCHAR> file_dialog_save_options;
 			{
-				std::basic_stringstream<TCHAR> ss;
-				ss << this->LoadString(IDS_SAVE_OPTION_UTF8_CSV) << _T("\0") << _T("*.csv") << _T("\0");
-				ss << this->LoadString(IDS_SAVE_OPTION_UTF8_TSV) << _T("\0") << _T("*.tsv") << _T("\0");
-				ss << _T("\0");
-				file_dialog_save_options = ss.str();
+				std::tstring const null_char(1, _T('\0'));  // Do NOT convert this to TCHAR because 'wchar_t' might get interpreted as 'unsigned short' depending on compiler flags
+				file_dialog_save_options += this->LoadString(IDS_SAVE_OPTION_UTF8_CSV);
+				file_dialog_save_options += null_char;
+				file_dialog_save_options += _T("*.csv");
+				file_dialog_save_options += null_char;
+
+				file_dialog_save_options += this->LoadString(IDS_SAVE_OPTION_UTF8_TSV);
+				file_dialog_save_options += null_char;
+				file_dialog_save_options += _T("*.tsv");
+				file_dialog_save_options += null_char;
+
+				file_dialog_save_options += null_char;
 			}
 			WTL::CFileDialog fdlg(FALSE, _T("csv"), NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, file_dialog_save_options.c_str());
 			fdlg.m_ofn.lpfnHook = NULL;
@@ -3998,7 +4007,7 @@ public:
 								{
 									should_flush = true;
 									unsigned long const update_time = GetTickCount();
-									std::basic_ostringstream<TCHAR> ss;
+									basic_fast_ostringstream<TCHAR> ss;
 									ss << this->LoadString(IDS_TEXT_DUMPING_SELECTION) << this->LoadString(IDS_TEXT_SPACE);
 									ss << nformat_ui(i + 1);
 									ss << this->LoadString(IDS_TEXT_SPACE) << this->LoadString(IDS_TEXT_OF) << this->LoadString(IDS_TEXT_SPACE);
@@ -4012,7 +4021,7 @@ public:
 										ss << this->LoadString(IDS_TEXT_PAREN_CLOSE);
 									}
 									ss << this->LoadString(IDS_TEXT_COLON);
-									ss << std::endl;
+									ss << _T('\n');
 									ss << text_buffer;
 									std::tstring const &text = ss.str();
 									dlg.SetProgressText(text);
@@ -4166,12 +4175,12 @@ public:
 		return 0;
 	}
 
-	void GetSubItemText(Results::value_type const &result, int const subitem, bool const for_ui, std::tstring &text, bool const lock_index = true)
+	void GetSubItemText(Results::value_type const &result, int const subitem, bool const for_ui, std::tstring &text, bool const lock_index = true) const
 	{
 		lock_ptr<NtfsIndex const> i(result.index, lock_index);
 		Results::value_type::second_type const key = result.key;
 		text.erase(text.begin(), text.end());
-		NumberFormatter &nformat = for_ui ? nformat_ui : nformat_io;
+		NFormat const &nformat = for_ui ? nformat_ui : nformat_io;
 		long long svalue;
 		unsigned long long uvalue;
 		switch (subitem)
@@ -4666,17 +4675,6 @@ WTL::CAppModule _Module;
 
 int _tmain(int argc, TCHAR* argv[])
 {
-#if 0
-	std::locale loc("");
-	typedef std::num_put<TCHAR, std::insert_iterator<std::basic_string<TCHAR> > > NumPut;
-	auto temp = new NumPut(loc.name().c_str(), 0);
-	std::tstring out;
-	std::basic_stringstream<TCHAR> ss;
-	ss.imbue(loc);
-	// ss << 123456789012345678ULL;
-	temp->put(std::inserter(out, out.end()), ss, ss.fill(), 123456789012345678ULL);
-	std::_USE(loc, NumPut);
-#endif
 	if (!IsDebuggerPresent())
 	{
 		HMODULE hKernel32 = NULL;

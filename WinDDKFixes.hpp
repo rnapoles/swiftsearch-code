@@ -73,6 +73,8 @@ namespace std { template<class C, class T, class D = ptrdiff_t, class P = T *, c
 #define iterator iterator_bad
 #define inserter inserter_bad
 #define insert_iterator insert_iterator_bad
+#define back_inserter back_inserter_bad
+#define back_insert_iterator back_insert_iterator_bad
 #define iterator_traits iterator_traits_bad
 #define reverse_iterator reverse_iterator_bad
 #include <utility>  // iterator_traits
@@ -90,6 +92,8 @@ struct std::iterator_traits_bad<T *>
 namespace std { template<class RanIt, class T = typename iterator_traits<RanIt>::value_type, class R = T &, class P = T *, class D = ptrdiff_t> class reverse_iterator; }
 #	include <iterator>
 #undef iterator_traits
+#undef back_insert_iterator
+#undef back_inserter
 #undef insert_iterator
 #undef inserter
 #undef iterator
@@ -115,6 +119,9 @@ namespace std
 	template<class T> T const *operator &(T const &p) { return reinterpret_cast<T const *>(&reinterpret_cast<unsigned char const &>(p)); }
 	template<class T> T volatile *operator &(T volatile &p) { return reinterpret_cast<T volatile *>(&reinterpret_cast<unsigned char volatile &>(p)); }
 	template<class T> T const volatile *operator &(T const volatile &p) { return reinterpret_cast<T const volatile *>(&reinterpret_cast<unsigned char const volatile &>(p)); }
+
+	template<bool B, class T = void> struct enable_if {};
+	template<class T> struct enable_if<true, T> { typedef T type; };
 
 	template<> class numeric_limits<__int64>;
 	template<> class numeric_limits<unsigned __int64>;
@@ -152,6 +159,39 @@ namespace std
 	template<class C, class _XI>
 	inline insert_iterator<C> inserter(C& _X, _XI _I)
 	{ return (insert_iterator<C>(_X, C::iterator(_I))); }
+
+	template<typename T, typename Sign>
+	struct has_push_back
+	{
+		typedef char yes[1];
+		typedef char no [2];
+		template <typename U, U> struct type_check;
+		template <typename _1> static yes &chk(type_check<Sign, &_1::push_back> *);
+		template <typename   > static no  &chk(...);
+		enum { value = sizeof(chk<T>(0)) == sizeof(yes) };
+	};
+
+	template<class C, class T> static typename enable_if< has_push_back<C, void(C::*)(T const &)>::value>::type push_back(C &c, T const &v) { c.push_back(v); }
+	template<class C, class T> static typename enable_if<!has_push_back<C, void(C::*)(T const &)>::value>::type push_back(C &c, T const &v) { c.insert(c.end(), v); }
+
+	template<class C>
+	class back_insert_iterator : public iterator<output_iterator_tag, void, void>
+	{
+	public:
+		typedef C container_type;
+		typedef typename C::value_type value_type;
+		explicit back_insert_iterator(C& _X) : container(&_X) {}
+		back_insert_iterator<C>& operator=(const value_type& _V) { push_back(*container, _V); return (*this); }
+		back_insert_iterator<C>& operator*() { return (*this); }
+		back_insert_iterator<C>& operator++() { return (*this); }
+		back_insert_iterator<C>& operator++(int) { return (*this); }
+	protected:
+		C *container;
+	};
+
+	template<class C>
+	inline back_insert_iterator<C> back_inserter(C& _X)
+	{ return (back_insert_iterator<C>(_X)); }
 
 	template<class It>
 	struct iterator_traits //: public iterator_traits_bad<It>

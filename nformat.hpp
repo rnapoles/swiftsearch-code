@@ -9,90 +9,157 @@
 #include <string>
 #include <sstream>
 
-std::locale get_numpunct_locale(std::locale const &loc)
+template<class OutIt, class Traits = std::char_traits<typename std::iterator_traits<OutIt>::value_type> >
+class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Traits>
 {
-	std::locale result(loc);
-#if defined(_MSC_VER) && defined(_ADDFAC)
-	std::_ADDFAC(result, new std::numpunct<TCHAR>());
+	typedef basic_iterator_ios this_type;
+	typedef std::basic_ios<typename Traits::char_type, Traits> base_type;
+	typedef typename Traits::char_type char_type;
+	typedef std::ctype<char_type> CType;
+	basic_iterator_ios(this_type const &);
+	this_type &operator =(this_type const &);
+	typedef std::num_put<char_type, OutIt> NumPut;
+#if defined(_MSC_VER) && !defined(_WIN64) && (!defined(_CPPLIB_VER) || _CPPLIB_VER < 403)
+	struct NumPutHacked : public NumPut
+	{
+		typedef TCHAR _E;
+		typedef OutIt _OI;
+		using NumPut::do_put;
+		static char *__cdecl _Ifmt(char *_Fmt, const char *_Spec, ios_base::fmtflags _Fl)
+		{
+			char *_S = _Fmt;
+			*_S++ = '%';
+			if (_Fl & ios_base::showpos)
+			{ *_S++ = '+'; }
+			if (_Fl & ios_base::showbase)
+			{ *_S++ = '#'; }
+			*_S++ = _Spec[0];
+			*_S++ = _Spec[1];
+			*_S++ = _Spec[2];
+			*_S++ = _Spec[3];
+			*_S++ = _Spec[4];
+			ios_base::fmtflags _Bfl = _Fl & ios_base::basefield;
+			*_S++ = _Bfl == ios_base::oct ? 'o'
+				: _Bfl != ios_base::hex ? _Spec[5]      // 'd' or 'u'
+				: _Fl & ios_base::uppercase ? 'X' : 'x';
+			*_S = '\0';
+			return (_Fmt);
+		}
+		_OI do_put(_OI _F, ios_base& _X, _E _Fill, __int64 _V) const
+		{
+			char _Buf[2 * _MAX_INT_DIG], _Fmt[12];
+			return (_Iput(_F, _X, _Fill, _Buf, sprintf(_Buf, _Ifmt(_Fmt, "I64lld", _X.flags()), _V)));
+		}
+		_OI do_put(_OI _F, ios_base& _X, _E _Fill, unsigned __int64 _V) const
+		{
+			char _Buf[2 * _MAX_INT_DIG], _Fmt[12];
+			return (_Iput(_F, _X, _Fill, _Buf, sprintf(_Buf, _Ifmt(_Fmt, "I64llu", _X.flags()), _V)));
+		}
+		template<class T>
+		_OI put(_OI _F, ios_base& _X, _E _Fill, T const &value) const { return this->do_put(_F, _X, _Fill, value); }
+	};
 #else
-	result = std::locale(locale, new std::numpunct<TCHAR>());
+	typedef NumPut NumPutHacked;
 #endif
-	return result;
-}
+	static NumPutHacked const *numput_instance() { NumPutHacked const *p = new NumPutHacked(); return p; }
+	std::ios_base *me;
+	NumPut const *num_put;
+	void event_callback(std::ios_base::event const type)
+	{
+		if (type == std::ios_base::imbue_event)
+		{
+			std::locale loc = this->getloc();
+			bool has_facet;
+#ifdef _ADDFAC
+			has_facet = std::_HAS(loc, NumPut);
+#else
+			has_facet = std::has_facet<NumPut>(loc);
+#endif
+			if (has_facet)
+			{
+				this->num_put = &
+#ifdef _ADDFAC
+					std::_USE(loc, NumPut)
+#else
+					std::use_facet<NumPut>(loc)
+#endif
+					;
+			}
+			else
+			{
+				this->num_put = numput_instance();
+			}
+		}
+	}
+	static void event_callback(std::ios_base::event type, ios_base &base, int)
+	{
+		return static_cast<this_type &>(base).event_callback(type);
+	}
+	template<class T>
+	OutIt do_put(OutIt const &i, T const &value) const
+	{
+		return static_cast<NumPutHacked const *>(this->num_put)->put(i, *this->me, this->base_type::fill(), value);
+	}
+	void init()
+	{
+		this->base_type::init();
+		this->me = static_cast<std::ios_base *>(this);
+		this->register_callback(event_callback, -1);
+		this->event_callback(std::ios_base::imbue_event);
+	}
+public:
+	template<class T>
+	struct lazy
+	{
+		this_type const *me;
+		T const *value;
+		explicit lazy(this_type const *const me, T const &value) : me(me), value(&value) { }
+		operator std::basic_string<char_type>() const
+		{
+			std::basic_string<char_type> result;
+			me->put(std::back_inserter(result), *value);
+			return result;
+		}
+	};
+	basic_iterator_ios()                                : base_type(), me(), num_put() { this->init(); }
+	explicit basic_iterator_ios(std::locale const &loc) : base_type(), me(), num_put() { this->init(); this->imbue(loc); }
+	OutIt put(OutIt const &i,                 bool const value) const { return this->do_put(i, value); }
+	OutIt put(OutIt const &i,                 char const value) const { return this->do_put(i, value); }
+#ifdef _NATIVE_WCHAR_T_DEFINED
+	OutIt put(OutIt const &i,            __wchar_t const value) const { return this->do_put(i, value); }
+#endif
+	OutIt put(OutIt const &i,   signed        char const value) const { return this->do_put(i, static_cast<long>(value)); }
+	OutIt put(OutIt const &i,   signed       short const value) const { return this->do_put(i, static_cast<long>(value)); }
+	OutIt put(OutIt const &i,   signed         int const value) const { return this->do_put(i, static_cast<long>(value)); }
+	OutIt put(OutIt const &i,   signed        long const value) const { return this->do_put(i, value); }
+	OutIt put(OutIt const &i,   signed long   long const value) const { return this->do_put(i, value); }
+	OutIt put(OutIt const &i, unsigned        char const value) const { return this->do_put(i, static_cast<unsigned long>(value)); }
+	OutIt put(OutIt const &i, unsigned       short const value) const { return this->do_put(i, static_cast<unsigned long>(value)); }
+	OutIt put(OutIt const &i, unsigned         int const value) const { return this->do_put(i, static_cast<unsigned long>(value)); }
+	OutIt put(OutIt const &i, unsigned        long const value) const { return this->do_put(i, value); }
+	OutIt put(OutIt const &i, unsigned long   long const value) const { return this->do_put(i, value); }
+	OutIt put(OutIt const &i,               double const value) const { return this->do_put(i, value); }
+	OutIt put(OutIt const &i,          long double const value) const { return this->do_put(i, value); }
+	OutIt put(OutIt const &i,          void const *const value) const { return this->do_put(i, value); }
+	template<class T>
+	lazy<T> operator()(T const &value) const { return lazy<T>(this, value); }
+};
+
+template<class Char, class Traits = std::char_traits<Char>, class Alloc = std::allocator<Char> >
+class basic_fast_ostringstream : public std::basic_string<Char, Traits, Alloc>
+{
+	typedef basic_fast_ostringstream this_type;
+	typedef std::basic_string<Char, Traits, Alloc> base_type;
+public:
+	template<class T>
+	this_type &operator<<(T const &value) { static_cast<base_type &>(*this) += value; return *this; }
+	this_type const &str() const { return *this; }
+	std::back_insert_iterator<base_type> back_inserter() { return std::back_insert_iterator<base_type>(*this); }
+};
 
 class NumberFormatter
 {
-	std::basic_string<TCHAR> result;
-	struct SS : public std::basic_stringstream<TCHAR>
-	{
-		typedef std::basic_stringstream<char_type, traits_type> base_type;
-#if defined(_MSC_VER) && !defined(_WIN64) && (!defined(_CPPLIB_VER) || _CPPLIB_VER < 403)
-		struct NumPunctFacet : public _Nput
-		{
-			typedef TCHAR _E;
-			typedef std::ostreambuf_iterator<_E, std::char_traits<_E> > _OI;
-			static char *__cdecl _Ifmt(char *_Fmt, const char *_Spec, ios_base::fmtflags _Fl)
-			{
-				char *_S = _Fmt;
-				*_S++ = '%';
-				if (_Fl & ios_base::showpos)
-				{ *_S++ = '+'; }
-				if (_Fl & ios_base::showbase)
-				{ *_S++ = '#'; }
-				*_S++ = _Spec[0];
-				*_S++ = _Spec[1];
-				*_S++ = _Spec[2];
-				*_S++ = _Spec[3];
-				*_S++ = _Spec[4];
-				ios_base::fmtflags _Bfl = _Fl & ios_base::basefield;
-				*_S++ = _Bfl == ios_base::oct ? 'o'
-					: _Bfl != ios_base::hex ? _Spec[5]      // 'd' or 'u'
-					: _Fl & ios_base::uppercase ? 'X' : 'x';
-				*_S = '\0';
-				return (_Fmt);
-			}
-			_OI do_put(_OI _F, ios_base& _X, _E _Fill, __int64 _V) const
-			{
-				char _Buf[2 * _MAX_INT_DIG], _Fmt[12];
-				return (_Iput(_F, _X, _Fill, _Buf, sprintf(_Buf, _Ifmt(_Fmt, "I64lld", _X.flags()), _V)));
-			}
-			_OI do_put(_OI _F, ios_base& _X, _E _Fill, unsigned __int64 _V) const
-			{
-				char _Buf[2 * _MAX_INT_DIG], _Fmt[12];
-				return (_Iput(_F, _X, _Fill, _Buf, sprintf(_Buf, _Ifmt(_Fmt, "I64llu", _X.flags()), _V)));
-			}
-		};
-		template<class V>
-		SS &custom_leftshift(V _X)
-		{
-			iostate _St = goodbit;
-			const std::basic_ostringstream<TCHAR>::sentry _Ok(*this);
-			if (_Ok)
-			{
-				const _Nput& _Fac = _USE(getloc(), _Nput);
-				_TRY_IO_BEGIN
-					if (static_cast<NumPunctFacet const &>(_Fac).do_put(std::basic_ostringstream<TCHAR>::_Iter(rdbuf()), *this, fill(), _X).failed())
-					{
-						_St |= badbit;
-					}
-				_CATCH_IO_END
-			}
-			setstate(_St);
-			return *this;
-		}
-		using std::basic_ostringstream<TCHAR>::operator<<;
-		SS &operator <<(long long x) { return this->custom_leftshift(x); }
-		SS &operator <<(unsigned long long x) { return this->custom_leftshift(x); }
-#endif
-};
-	SS ss;
-	bool ascii;
 public:
-	explicit NumberFormatter(std::locale const &loc) : ascii(false)
-	{
-		this->ss.imbue(loc);
-	}
-
 #ifdef _M_X64
 	static unsigned int base_10_digits(unsigned long long x)
 	{
@@ -192,23 +259,5 @@ inline void NumberFormatter::format_fast_ascii_append<unsigned long long>(std::b
 	}
 }
 #endif
-
-inline std::basic_string<TCHAR> const &NumberFormatter::operator()(unsigned long long v)
-{
-	if (this->ascii)
-	{
-		result.erase(result.begin(), result.end());
-		this->format_fast_ascii_append(result, v, 0);
-	}
-	else
-	{
-		ss.str(std::basic_string<TCHAR>());
-		ss.clear();
-		ss << v;
-		ss.seekg(0);
-		ss >> result;
-	}
-	return result;
-}
 
 #endif
