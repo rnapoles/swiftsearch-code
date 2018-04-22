@@ -3,11 +3,22 @@
 #define _WIN32_WINNT 0x502
 #include <SDKDDKVer.h>
 
-#pragma warning(disable: 4100)
-#pragma warning(disable: 4324)
-#pragma warning(disable: 4458)
-#pragma warning(disable: 4459)
-// #pragma warning(disable: 4838)
+#pragma warning(disable: 4062)  // enumerator in switch of enum is not handled
+#pragma warning(disable: 4100)  // unreferenced formal parameter
+#pragma warning(disable: 4290)  // C++ exception specification ignored except to indicate a function is not __declspec(nothrow)
+#pragma warning(disable: 4324)  // structure was padded due to __declspec(align())
+#pragma warning(disable: 4458)  // declaration of 'field' hides class member
+#pragma warning(disable: 4459)  // declaration of 'identifier' hides global declaration
+#pragma warning(disable: 4623)  // default constructor was implicitly defined as deleted
+#pragma warning(disable: 4624)  // destructor was implicitly defined as deleted because a base class destructor is inaccessible or deleted
+#pragma warning(disable: 4625)  // copy constructor was implicitly defined as deleted
+#pragma warning(disable: 4626)  // assignment operator was implicitly defined as deleted
+#pragma warning(disable: 4668)  // 'MACRO' is not defined as a preprocessor macro, replacing with '0' for '#if/#elif'
+#pragma warning(disable: 4710)  // function not inlined
+#pragma warning(disable: 4820)  // 'n' bytes padding added after data member
+// #pragma warning(disable: 4838)  // conversion requires a narrowing conversion
+#pragma warning(disable: 5026)  // move constructor was implicitly defined as deleted
+#pragma warning(disable: 5027)  // move assignment operator was implicitly defined as deleted
 
 #define _USE_MATH_DEFINES 1
 #define _CRT_OBSOLETE_NO_WARNINGS 1

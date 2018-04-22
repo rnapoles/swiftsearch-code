@@ -37,7 +37,7 @@ private:
 
 public:
 	BackgroundWorker() : refs() { InitializeCriticalSection(&this->criticalSection); }
-	virtual ~BackgroundWorker() throw(...) { DeleteCriticalSection(&this->criticalSection); }
+	virtual ~BackgroundWorker() throw(std::exception) { DeleteCriticalSection(&this->criticalSection); }
 
 	virtual void clear() = 0;
 
@@ -61,7 +61,7 @@ public:
 
 class BackgroundWorkerImpl : public BackgroundWorker
 {
-	enum { USE_WINDOW_MESSAGES = 0 };
+	static bool use_window_messages() { return false; }
 	class CoInit
 	{
 		CoInit(CoInit const &) : hr(S_FALSE) { }
@@ -81,19 +81,20 @@ class BackgroundWorkerImpl : public BackgroundWorker
 	static unsigned int CALLBACK entry(void *arg) { return ((BackgroundWorkerImpl *)arg)->process(); }
 public:
 	BackgroundWorkerImpl(bool coInitialize)
-		: coInitialize(coInitialize), tid(0), hThread((HANDLE)_beginthreadex(NULL, 0, entry, this, CREATE_SUSPENDED, &tid)), hSemaphore(NULL), stop(false)
+		: coInitialize(coInitialize), tid(0), hThread(), hSemaphore(NULL), stop(false)
 	{
+		this->hThread = (HANDLE)_beginthreadex(NULL, 0, entry, this, CREATE_SUSPENDED, &tid);
 		this->hSemaphore = CreateSemaphore(NULL, 0, LONG_MAX, NULL);
 		ResumeThread(this->hThread);
 	}
 
-	~BackgroundWorkerImpl() throw(...)
+	~BackgroundWorkerImpl() throw(std::exception)
 	{
 		// Clear all the tasks
 		this->stop = true;
 		CSLock lock(this->criticalSection);
 		this->todo.clear();
-		if (!USE_WINDOW_MESSAGES)
+		if (!use_window_messages())
 		{
 			LONG prev;
 			if (!ReleaseSemaphore(this->hSemaphore, 1, &prev) || WaitForSingleObject(this->hThread, INFINITE) != WAIT_OBJECT_0)
@@ -129,7 +130,7 @@ public:
 		// SetThreadPriority(GetCurrentThread(), 0x00010000 /*THREAD_MODE_BACKGROUND_BEGIN*/);
 		DWORD result = 0;
 		CoInit const com(this->coInitialize);
-		if (!USE_WINDOW_MESSAGES)
+		if (!use_window_messages())
 		{
 			while ((result = WaitForSingleObject(this->hSemaphore, INFINITE)) == WAIT_OBJECT_0)
 			{
@@ -207,13 +208,13 @@ public:
 		DWORD exitCode;
 		if (GetExitCodeThread(this->hThread, &exitCode) && exitCode == STILL_ACTIVE)
 		{
-			if (!USE_WINDOW_MESSAGES)
+			if (!use_window_messages())
 			{
 				if (lifo) { this->todo.push_front(pThunk); }
 				else { this->todo.push_back(pThunk); }
 			}
 			LONG prev;
-			if (USE_WINDOW_MESSAGES
+			if (use_window_messages()
 				? PostThreadMessage(this->tid, WM_NULL, reinterpret_cast<WPARAM>(this->hThread), reinterpret_cast<LPARAM>(pThunk))
 				: ReleaseSemaphore(this->hSemaphore, 1, &prev))
 			{

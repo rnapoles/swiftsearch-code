@@ -54,16 +54,27 @@ namespace WTL { using std::min; using std::max; }
 #undef __movsb
 #endif
 
+#pragma warning(push)
+#pragma warning(disable: 4191)  // 'type cast': unsafe conversion
+#pragma warning(disable: 4265)  // class has virtual functions, but destructor is not virtual
+#pragma warning(disable: 4302)
+#pragma warning(disable: 4365)
+#pragma warning(disable: 4457)  // declaration of 'pstr' hides function parameter
+#pragma warning(disable: 4555)  // expression has no effect; expected expression with side-effect
+#pragma warning(disable: 4838)  // conversion requires a narrowing conversion
+#pragma warning(disable: 4987)  // nonstandard extension used: 'throw (...)'
 #include <atlbase.h>
 #include <atlapp.h>
 #include <atlcrack.h>
 #include <atlmisc.h>
 extern WTL::CAppModule _Module;
 #include <atlwin.h>
-// #include <atlframe.h>
+#include <atldlgs.h>
+#include <atlframe.h>
 #include <atlctrls.h>
 #include <atlctrlx.h>
 #include <atltheme.h>
+#pragma warning(pop)
 
 
 #if defined(__STDC_WANT_SECURE_LIB__) && !__STDC_WANT_SECURE_LIB__

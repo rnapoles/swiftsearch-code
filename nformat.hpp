@@ -182,10 +182,10 @@ inline void NumberFormatter::format_fast_ascii_append<unsigned long long>(std::b
 	if (digits10 < min_width) { digits10 = min_width; }
 	size_t const n = result.size();
 	result.resize(n + digits10);
-	unsigned long long const radix = 10;
+	unsigned char const radix = 10;
 	for (size_t i = 0; value != 0 || i < min_width; ++i)
 	{
-		unsigned long long rem = static_cast<unsigned long long>(value % radix);
+		long long rem = static_cast<long long>(value % radix);
 		while (rem < 0) { rem += radix; }
 		result[n + digits10 - 1 - i] = static_cast<TCHAR>(_T('0') + rem);
 		value /= radix;

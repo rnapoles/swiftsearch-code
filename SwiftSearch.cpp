@@ -85,6 +85,12 @@ extern WTL::CAppModule _Module;
 #define BOOST_XPRESSIVE_DYNAMIC_HPP_EAN BOOST_XPRESSIVE_DYNAMIC_HPP_EAN_10_04_2005
 #endif
 
+#ifdef _MSC_VER
+#define BEGIN_MSG_MAP_EX2(Type) __pragma(warning(push)) __pragma(warning(disable: 4555)) BEGIN_MSG_MAP_EX(Type) __pragma(warning(pop))
+#else
+#define BEGIN_MSG_MAP_EX2(Type) BEGIN_MSG_MAP_EX(Type)
+#endif
+
 namespace std { typedef basic_string<TCHAR> tstring; }
 namespace std
 {
@@ -357,7 +363,8 @@ namespace winnt
 
 	template<class T> struct identity { typedef T type; };
 	typedef long NTSTATUS;
-#define X(F, T) identity<T>::type &F = *reinterpret_cast<identity<T>::type *>(GetProcAddress(GetModuleHandle(_T("ntdll.dll")), #F))
+	enum _SYSTEM_INFORMATION_CLASS { };
+#define X(F, T) identity<T>::type &F = *reinterpret_cast<identity<T>::type *const &>(static_cast<FARPROC const &>(GetProcAddress(GetModuleHandle(_T("ntdll.dll")), #F)))
 	X(NtOpenFile, NTSTATUS NTAPI(OUT PHANDLE FileHandle, IN ACCESS_MASK DesiredAccess, IN OBJECT_ATTRIBUTES *ObjectAttributes, OUT IO_STATUS_BLOCK *IoStatusBlock, IN ULONG ShareAccess, IN ULONG OpenOptions));
 	X(NtReadFile, NTSTATUS NTAPI(IN HANDLE FileHandle, IN HANDLE Event OPTIONAL, IN IO_APC_ROUTINE *ApcRoutine OPTIONAL, IN PVOID ApcContext OPTIONAL, OUT IO_STATUS_BLOCK *IoStatusBlock, OUT PVOID buffer_ptr, IN ULONG Length, IN PLARGE_INTEGER ByteOffset OPTIONAL, IN PULONG Key OPTIONAL));
 	X(NtQueryVolumeInformationFile, NTSTATUS NTAPI(HANDLE FileHandle, IO_STATUS_BLOCK *IoStatusBlock, PVOID FsInformation, unsigned long Length, unsigned long FsInformationClass));
@@ -646,7 +653,7 @@ LPTSTR GetAnyErrorText(DWORD errorCode, va_list* pArgList = NULL)
 	if (!FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | (pArgList == NULL ? FORMAT_MESSAGE_IGNORE_INSERTS : 0), NULL, errorCode, 0, buffer, sizeof(buffer) / sizeof(*buffer), pArgList))
 	{
 		if (!FormatMessage(FORMAT_MESSAGE_FROM_HMODULE | (pArgList == NULL ? FORMAT_MESSAGE_IGNORE_INSERTS : 0), GetModuleHandle(_T("NTDLL.dll")), errorCode, 0, buffer, sizeof(buffer) / sizeof(*buffer), pArgList))
-		{ _stprintf(buffer, _T("%#x"), errorCode); }
+		{ _stprintf(buffer, _T("%#lx"), errorCode); }
 	}
 	return buffer;
 }
@@ -1281,13 +1288,13 @@ public:
 	{
 		this->_init_called = true;
 		bool success = false;
-		std::tstring dirsep;
-		dirsep.append(1, _T('\\'));
-		dirsep.append(1, _T('/'));
+		std::tstring dirseps;
+		dirseps.append(1, _T('\\'));
+		dirseps.append(1, _T('/'));
 		try
 		{
 			std::tstring path_name = this->_root_path;
-			path_name.erase(path_name.begin() + static_cast<ptrdiff_t>(path_name.size() - std::min(path_name.find_last_not_of(dirsep), path_name.size())), path_name.end());
+			path_name.erase(path_name.begin() + static_cast<ptrdiff_t>(path_name.size() - std::min(path_name.find_last_not_of(dirseps), path_name.size())), path_name.end());
 			if (!path_name.empty() && *path_name.begin() != _T('\\') && *path_name.begin() != _T('/')) { path_name.insert(0, _T("\\\\.\\")); }
 			Handle volume(CreateFile(path_name.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL));
 			winnt::IO_STATUS_BLOCK iosb;
@@ -1415,7 +1422,7 @@ public:
 			} preprocessor = { this };
 			preprocessor(0x000000000005, 0, 1);
 			Handle().swap(this->_volume);
-			_ftprintf(stderr, _T("Finished: %s (%u ms)\n"), this->_root_path.c_str(), (clock() - begin_time) * 1000U / CLOCKS_PER_SEC);
+			_ftprintf(stderr, _T("Finished: %s (%llu ms)\n"), this->_root_path.c_str(), (clock() - begin_time) * 1000ULL / CLOCKS_PER_SEC);
 		}
 		finished ? SetEvent(this->_finished_event) : ResetEvent(this->_finished_event);
 		return b;
@@ -1573,7 +1580,8 @@ public:
 
 	size_t get_path(key_type key, std::tstring &result, bool const name_only) const
 	{
-		if (false && !name_only && WaitForSingleObject(this->_finished_event, 0) == WAIT_TIMEOUT) { return 0; }
+		bool wait_for_finish = false;  // has performance penalty
+		if (wait_for_finish && !name_only && WaitForSingleObject(this->_finished_event, 0) == WAIT_TIMEOUT) { return 0; }
 		size_t const old_size = result.size();
 		bool leaf = true;
 		while (~key.frs)
@@ -1861,13 +1869,17 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 
 	void OnPause(UINT uNotifyCode, int nID, CWindow wndCtl)
 	{
-		UNREFERENCED_PARAMETER((uNotifyCode, nID, wndCtl));
+		UNREFERENCED_PARAMETER(uNotifyCode);
+		UNREFERENCED_PARAMETER(nID);
+		UNREFERENCED_PARAMETER(wndCtl);
 		__debugbreak();
 	}
 
 	void OnCancel(UINT uNotifyCode, int nID, CWindow wndCtl)
 	{
-		UNREFERENCED_PARAMETER((uNotifyCode, nID, wndCtl));
+		UNREFERENCED_PARAMETER(uNotifyCode);
+		UNREFERENCED_PARAMETER(nID);
+		UNREFERENCED_PARAMETER(wndCtl);
 		PostQuitMessage(ERROR_CANCELLED);
 	}
 
@@ -1884,7 +1896,7 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 		return GetSysColorBrush(BACKGROUND_COLOR);
 	}
 
-	BEGIN_MSG_MAP_EX(This)
+	BEGIN_MSG_MAP_EX2(This)
 		CHAIN_MSG_MAP(CDialogResize<This>)
 		MSG_WM_INITDIALOG(OnInitDialog)
 		// MSG_WM_ERASEBKGND(OnEraseBkgnd)
@@ -1927,7 +1939,7 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 		for (;;)
 		{
 			unsigned long result = MsgWaitForMultipleObjectsEx(static_cast<unsigned int>(nhandles), reinterpret_cast<HANDLE const *>(handles), UPDATE_INTERVAL, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-			if (WAIT_OBJECT_0 <= result && result < WAIT_OBJECT_0 + nhandles || result == WAIT_TIMEOUT)
+			if (result < WAIT_OBJECT_0 + nhandles || result == WAIT_TIMEOUT)
 			{ return result; }
 			else if (result == WAIT_OBJECT_0 + static_cast<unsigned int>(nhandles))
 			{
@@ -2411,6 +2423,67 @@ struct SearchResult
 };
 #pragma pack(pop)
 
+class RefCountedCString : public WTL::CString  // ref-counted in order to ensure that copying doesn't move the buffer (e.g. in case a containing vector resizes)
+{
+	typedef RefCountedCString this_type;
+	typedef WTL::CString base_type;
+	void check_same_buffer(this_type const &other) const
+	{
+		if (this->GetData() != other.GetData())
+		{
+			throw std::logic_error("expected the same buffer for both strings");
+		}
+	}
+public:
+	RefCountedCString() : base_type() { }
+	RefCountedCString(this_type const &other) : base_type(other)
+	{
+		this->check_same_buffer(other);
+	}
+	this_type &operator =(this_type const &other)
+	{
+		this_type &result = static_cast<this_type &>(this->base_type::operator =(static_cast<base_type const &>(other)));
+		result.check_same_buffer(other);
+		return result;
+	}
+	LPTSTR c_str()
+	{
+		int const n = this->base_type::GetLength();
+		LPTSTR const result = this->base_type::GetBuffer(n + 1);
+		if (result[n] != _T('\0'))
+		{
+			result[n] = _T('\0');
+		}
+		return result;
+	}
+	operator LPTSTR()
+	{
+		return this->c_str();
+	}
+	friend std::basic_ostream<TCHAR> &operator<<(std::basic_ostream<TCHAR> &ss, this_type &me)
+	{
+		return ss << me.c_str();
+	}
+};
+
+class StringLoader
+{
+	std::vector<RefCountedCString> strings;
+public:
+	RefCountedCString &operator()(unsigned short const id)
+	{
+		if (id >= this->strings.size())
+		{
+			this->strings.resize(id + 1);
+		}
+		if (this->strings[id].IsEmpty())
+		{
+			this->strings[id].LoadString(id);
+		}
+		return this->strings[id];
+	}
+};
+
 class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize<CMainDlg>, public CInvokeImpl<CMainDlg>, private WTL::CMessageFilter
 {
 	enum { IDC_STATUS_BAR = 1100 + 0 };
@@ -2488,7 +2561,7 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 
 	class CSearchPattern : public ATL::CWindowImpl<CSearchPattern, WTL::CEdit>
 	{
-		BEGIN_MSG_MAP_EX(CCustomDialogCode)
+		BEGIN_MSG_MAP_EX2(CCustomDialogCode)
 			MSG_WM_MOUSEMOVE(OnMouseMove)
 			MSG_WM_MOUSELEAVE(OnMouseLeave)
 			MSG_WM_MOUSEHOVER(OnMouseHover)
@@ -2496,6 +2569,7 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 			MESSAGE_RANGE_HANDLER_EX(WM_KEYDOWN, WM_KEYUP, OnKey)
 		END_MSG_MAP()
 		bool tracking;
+		StringLoader LoadString;
 	public:
 		CSearchPattern() : tracking() { }
 		struct KeyNotify { NMHDR hdr; WPARAM vkey; LPARAM lParam; };
@@ -2551,7 +2625,16 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 		void OnMouseHover(WPARAM /*wParam*/, WTL::CPoint /*ptPos*/)
 		{
 			this->SetMsgHandled(FALSE);
-			EDITBALLOONTIP tip = { sizeof(tip), _T("Search Pattern"), _T("Entern pattern to match against the file's name or path, such as:\r\nC:\\Windows\\*.exe\r\nPicture*.jpg"), TTI_INFO };
+			WTL::CString sysdir;
+			{
+				LPTSTR buf = sysdir.GetBufferSetLength(SHRT_MAX);
+				unsigned int const cch = GetWindowsDirectory(buf, sysdir.GetAllocLength());
+				sysdir.Delete(cch, sysdir.GetLength() - static_cast<int>(cch));
+			}
+			WTL::CString const
+				title = this->LoadString(IDS_SEARCH_PATTERN_TITLE),
+				body = this->LoadString(IDS_SEARCH_PATTERN_BODY) + _T("\r\n") + sysdir + getdirsep() + _T("*.exe") + _T("\r\n") + _T("Picture*.jpg");
+			EDITBALLOONTIP tip = { sizeof(tip), title, body, TTI_INFO };
 			this->ShowBalloonTip(&tip);
 		}
 	};
@@ -2777,6 +2860,7 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	COLORREF encryptedColor;
 	COLORREF compressedColor;
 	int suppress_escapes;
+	StringLoader LoadString;
 	static DWORD WINAPI SHOpenFolderAndSelectItemsThread(IN LPVOID lpParameter)
 	{
 		std::auto_ptr<std::pair<std::pair<CShellItemIDList, ATL::CComPtr<IShellFolder> >, std::vector<CShellItemIDList> > > p(
@@ -3018,7 +3102,7 @@ public:
 		return this->lvFiles.SendMessage(uMsg, wParam, lParam);
 	}
 	
-	static VOID CALLBACK WaitCallback(PVOID lpParameter, BOOLEAN TimerOrWaitFired)
+	static VOID NTAPI WaitCallback(PVOID lpParameter, BOOLEAN TimerOrWaitFired)
 	{
 		HWND const hWnd = reinterpret_cast<HWND>(lpParameter);
 		if (!TimerOrWaitFired)
@@ -3055,18 +3139,18 @@ public:
 		if (!this->txtPattern)
 		{ this->txtPattern.Attach(this->GetDlgItem(IDC_EDITFILENAME)); }
 		this->txtPattern.EnsureTrackingMouseHover();
-		this->txtPattern.SetCueBannerText(_T("Search by name or path (hover for help)"), true);
+		this->txtPattern.SetCueBannerText(this->LoadString(IDS_SEARCH_PATTERN_BANNER), true);
 		WTL::CHeaderCtrl hdr = this->lvFiles.GetHeader();
-		{ int const icol = COLUMN_INDEX_NAME             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT , 200, _T("Name")         }; this->lvFiles.InsertColumn(icol, &column); }
-		{ int const icol = COLUMN_INDEX_PATH             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT , 340, _T("Path")         }; this->lvFiles.InsertColumn(icol, &column); }
-		{ int const icol = COLUMN_INDEX_SIZE             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT, 105, _T("Size")         }; this->lvFiles.InsertColumn(icol, &column); }
-		{ int const icol = COLUMN_INDEX_SIZE_ON_DISK     ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT, 105, _T("Size on Disk") }; this->lvFiles.InsertColumn(icol, &column); }
-		{ int const icol = COLUMN_INDEX_CREATION_TIME    ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  80, _T("Created")      }; this->lvFiles.InsertColumn(icol, &column); }
-		{ int const icol = COLUMN_INDEX_MODIFICATION_TIME; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  80, _T("Written")      }; this->lvFiles.InsertColumn(icol, &column); }
-		{ int const icol = COLUMN_INDEX_ACCESS_TIME      ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  80, _T("Accessed")     }; this->lvFiles.InsertColumn(icol, &column); }
-		{ int const icol = COLUMN_INDEX_DESCENDENTS      ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT,  74, _T("Descendents")  }; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_NAME             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT , 200, this->LoadString(IDS_COLUMN_NAME_HEADER         )}; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_PATH             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT , 340, this->LoadString(IDS_COLUMN_PATH_HEADER         )}; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_SIZE             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT, 105, this->LoadString(IDS_COLUMN_SIZE_HEADER         )}; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_SIZE_ON_DISK     ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT, 105, this->LoadString(IDS_COLUMN_SIZE_ON_DISK_HEADER )}; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_CREATION_TIME    ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  80, this->LoadString(IDS_COLUMN_CREATION_TIME_HEADER)}; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_MODIFICATION_TIME; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  80, this->LoadString(IDS_COLUMN_WRITE_TIME_HEADER   )}; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_ACCESS_TIME      ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  80, this->LoadString(IDS_COLUMN_ACCESS_TIME_HEADER  )}; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_DESCENDENTS      ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT,  74, this->LoadString(IDS_COLUMN_DESCENDENTS_HEADER  )}; this->lvFiles.InsertColumn(icol, &column); }
 
-		this->cmbDrive.SetCueBannerText(_T("Search where?"));
+		this->cmbDrive.SetCueBannerText(this->LoadString(IDS_SEARCH_VOLUME_BANNER));
 		HINSTANCE hInstance = GetModuleHandle(NULL);
 		this->SetIcon((HICON) LoadImage(hInstance, MAKEINTRESOURCE(IDI_ICON1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0), FALSE);
 		this->SetIcon((HICON) LoadImage(hInstance, MAKEINTRESOURCE(IDI_ICON1), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0), TRUE);
@@ -3113,7 +3197,7 @@ public:
 			this->lvFiles.MoveWindow(&rect);
 		}
 		this->statusbar.SetParts(sizeof(rcStatusPaneWidths) / sizeof(*rcStatusPaneWidths), const_cast<int *>(rcStatusPaneWidths));
-		this->statusbar.SetText(0, _T("Type in a file name and press Enter."));
+		this->statusbar.SetText(0, this->LoadString(IDS_STATUS_DEFAULT));
 		WTL::CRect rcStatusPane1; this->statusbar.GetRect(1, &rcStatusPane1);
 		//this->statusbarProgress.Create(this->statusbar, rcStatusPane1, NULL, WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0);
 		//this->statusbarProgress.SetRange(0, INT_MAX);
@@ -3144,7 +3228,7 @@ public:
 			}
 		}
 
-		this->cmbDrive.SetCurSel(this->cmbDrive.AddString(_T("(All drives)")));
+		this->cmbDrive.SetCurSel(this->cmbDrive.AddString(this->LoadString(IDS_SEARCH_VOLUME_ALL)));
 		for (size_t j = 0; j != path_names.size(); ++j)
 		{
 			this->cmbDrive.AddString(path_names[j].c_str());
@@ -3304,14 +3388,14 @@ public:
 			boost::intrusive_ptr<NtfsIndex> const p = static_cast<NtfsIndex *>(this->cmbDrive.GetItemDataPtr(selected));
 			if (!p || p->failed())
 			{
-				this->MessageBox(_T("This does not appear to be a valid NTFS volume."), _T("Error"), MB_OK | MB_ICONERROR);
+				this->MessageBox(this->LoadString(IDS_INVALID_NTFS_VOLUME_BODY), this->LoadString(IDS_ERROR_TITLE), MB_OK | MB_ICONERROR);
 				return;
 			}
 		}
 		this->clear();
 		WTL::CWaitCursor wait;
 		CProgressDialog dlg(*this);
-		dlg.SetProgressTitle(_T("Searching..."));
+		dlg.SetProgressTitle(this->LoadString(IDS_SEARCHING_TITLE));
 		if (dlg.HasUserCancelled()) { return; }
 		std::tstring pattern;
 		{
@@ -3341,11 +3425,11 @@ public:
 		if (is_regex)
 		{ 
 			try { re = RE::compile(pattern.begin(), pattern.end(), boost::xpressive::regex_constants::nosubs | boost::xpressive::regex_constants::optimize | boost::xpressive::regex_constants::single_line | boost::xpressive::regex_constants::icase | boost::xpressive::regex_constants::collate); }
-			catch (boost::xpressive::regex_error const &ex) { this->MessageBox(static_cast<WTL::CString>(ex.what()), _T("Regex Error"), MB_ICONERROR); return; }
+			catch (boost::xpressive::regex_error const &ex) { this->MessageBox(static_cast<WTL::CString>(ex.what()), this->LoadString(IDS_REGEX_ERROR_TITLE), MB_ICONERROR); return; }
 		}
 #else
 		if (is_regex)
-		{ this->MessageBox(_T("Regex support not included."), _T("Regex Error"), MB_ICONERROR); return; }
+		{ this->MessageBox(this->LoadString(IDS_REGEX_UNSUPPORTED_ERROR_MESSAGE), this->LoadString(IDS_REGEX_ERROR_TITLE), MB_ICONERROR); return; }
 #endif
 		if (!is_path_pattern && !~pattern.find(_T('*')) && !~pattern.find(_T('?'))) { pattern.insert(pattern.begin(), _T('*')); pattern.insert(pattern.end(), _T('*')); }
 		clock_t const start = clock();
@@ -3398,7 +3482,7 @@ public:
 				if (dlg.ShouldUpdate())
 				{
 					std::basic_ostringstream<TCHAR> ss;
-					ss << _T("Reading file tables...") << _T(" ");
+					ss << this->LoadString(IDS_TEXT_READING_FILE_TABLES) << this->LoadString(IDS_TEXT_SPACE);
 					bool any = false;
 					size_t temp_overall_progress_numerator = overall_progress_numerator;
 					for (size_t i = 0; i != wait_indices.size(); ++i)
@@ -3408,12 +3492,13 @@ public:
 						temp_overall_progress_numerator += records_so_far;
 						if (records_so_far != j->mft_capacity)
 						{
-							if (any) { ss << _T(", "); }
-							else { ss << _T(" "); }
-							ss << lock(j)->root_path() << _T(" ") << _T("(") << nformat_ui(records_so_far);
-							ss << _T(" of ");
+							if (any) { ss << this->LoadString(IDS_TEXT_COMMA) << this->LoadString(IDS_TEXT_SPACE); }
+							else { ss << this->LoadString(IDS_TEXT_SPACE); }
+							ss << lock(j)->root_path() << this->LoadString(IDS_TEXT_SPACE) << this->LoadString(IDS_TEXT_PAREN_OPEN) << nformat_ui(records_so_far);
+							// TODO: 'of' _really_ isn't a good thing to localize in isolation..
+							ss << this->LoadString(IDS_TEXT_SPACE) << this->LoadString(IDS_TEXT_OF) << this->LoadString(IDS_TEXT_SPACE);
 							// These MUST be separate statements since nformat_ui is used twice
-							ss << nformat_ui(j->mft_capacity) << _T(")");
+							ss << nformat_ui(j->mft_capacity) << this->LoadString(IDS_TEXT_PAREN_CLOSE);
 							any = true;
 						}
 					}
@@ -3440,10 +3525,12 @@ public:
 					if (average_speed.first > initial_average_amount)
 					{
 						ss << std::endl;
-						ss << _T("Average speed: ") << nformat_ui(static_cast<size_t>((average_speed.first - initial_average_amount) * static_cast<double>(CLOCKS_PER_SEC) / ((tnow - initial_time) * (1ULL << 20)))) << _T(" MiB/s");
-						ss << _T(" ");
+						ss << this->LoadString(IDS_TEXT_AVERAGE_SPEED) << this->LoadString(IDS_TEXT_COLON) << this->LoadString(IDS_TEXT_SPACE)
+							<< nformat_ui(static_cast<size_t>((average_speed.first - initial_average_amount) * static_cast<double>(CLOCKS_PER_SEC) / ((tnow - initial_time) * (1ULL << 20))))
+							<< this->LoadString(IDS_TEXT_SPACE) << this->LoadString(IDS_TEXT_MIB_S);
+						ss << this->LoadString(IDS_TEXT_SPACE);
 						// These MUST be separate statements since nformat_ui is used twice
-						ss << _T("(") << nformat_ui(average_speed.first / (1 << 20)) << _T(" MiB read)");
+						ss << this->LoadString(IDS_TEXT_PAREN_OPEN) << nformat_ui(average_speed.first / (1 << 20)) << this->LoadString(IDS_TEXT_SPACE) << this->LoadString(IDS_TEXT_MIB_READ) << this->LoadString(IDS_TEXT_PAREN_CLOSE);
 					}
 					std::tstring const text = ss.str();
 					dlg.SetProgressText(text);
@@ -3489,10 +3576,19 @@ public:
 									}
 								}
 								std::tstring text(0x100 + root_path.size() + static_cast<ptrdiff_t>(path.second - path.first), _T('\0'));
-								text.resize(static_cast<size_t>(_stprintf(&*text.begin(), _T("Searching %.*s (%s of %s)...\r\n%.*s"),
+								text.resize(static_cast<size_t>(_stprintf(&*text.begin(), _T("%s%s%.*s%s%s%s%s%s%s%s%s%s\r\n%.*s"),
+									this->LoadString(IDS_TEXT_SEARCHING).c_str(),
+									this->LoadString(IDS_TEXT_SPACE).c_str(),
 									static_cast<int>(root_path.size()), root_path.c_str(),
+									this->LoadString(IDS_TEXT_SPACE).c_str(),
+									this->LoadString(IDS_TEXT_PAREN_OPEN).c_str(),
 									static_cast<std::tstring>(nformat_ui(current_progress_numerator)).c_str(),
+									this->LoadString(IDS_TEXT_SPACE).c_str(),
+									this->LoadString(IDS_TEXT_OF).c_str(),
+									this->LoadString(IDS_TEXT_SPACE).c_str(),
 									static_cast<std::tstring>(nformat_ui(current_progress_denominator)).c_str(),
+									this->LoadString(IDS_TEXT_PAREN_CLOSE).c_str(),
+									this->LoadString(IDS_TEXT_ELLIPSIS).c_str(),
 									static_cast<int>(path.second - path.first), path.first == path.second ? NULL : &*path.first)));
 								dlg.SetProgressText(text);
 								dlg.SetProgress(temp_overall_progress_numerator + static_cast<unsigned long long>(i->mft_capacity) * static_cast<unsigned long long>(current_progress_numerator) / static_cast<unsigned long long>(current_progress_denominator), static_cast<long long>(overall_progress_denominator));
@@ -3557,14 +3653,14 @@ public:
 	void OnBrowse(UINT /*uNotifyCode*/, int /*nID*/, HWND /*hWnd*/)
 	{
 		TCHAR path[MAX_PATH];
-		BROWSEINFO info = { this->m_hWnd, NULL, path, _T("If you would like to filter the results such that they include only the subfolders and files of a specific folder, specify that folder here:"), BIF_NONEWFOLDERBUTTON | BIF_USENEWUI | BIF_RETURNONLYFSDIRS | BIF_DONTGOBELOWDOMAIN };
+		BROWSEINFO info = { this->m_hWnd, NULL, path, this->LoadString(IDS_BROWSE_BODY), BIF_NONEWFOLDERBUTTON | BIF_USENEWUI | BIF_RETURNONLYFSDIRS | BIF_DONTGOBELOWDOMAIN };
 		if (LPITEMIDLIST const pidl = SHBrowseForFolder(&info))
 		{
 			bool const success = !!SHGetPathFromIDList(pidl, path);
 			ILFree(pidl);
 			if (success)
 			{
-				this->txtPattern.SetWindowText((std::tstring(path) + _T("\\*")).c_str());
+				this->txtPattern.SetWindowText((std::tstring(path) + getdirsep() + _T("*")).c_str());
 				this->GotoDlgCtrl(this->txtPattern);
 				this->txtPattern.SetSel(this->txtPattern.GetWindowTextLength(), this->txtPattern.GetWindowTextLength());
 			}
@@ -3816,7 +3912,7 @@ public:
 
 		if (results.size() == 1)
 		{
-			MENUITEMINFO mii2 = { sizeof(mii2), MIIM_ID | MIIM_STRING | MIIM_STATE, MFT_STRING, MFS_ENABLED, openContainingFolderId, NULL, NULL, NULL, NULL, _T("Open &Containing Folder") };
+			MENUITEMINFO mii2 = { sizeof(mii2), MIIM_ID | MIIM_STRING | MIIM_STATE, MFT_STRING, MFS_ENABLED, openContainingFolderId, NULL, NULL, NULL, NULL, this->LoadString(IDS_MENU_OPEN_CONTAINING_FOLDER) };
 			menu.InsertMenuItem(ninserted++, TRUE, &mii2);
 
 			if (false) { menu.SetMenuDefaultItem(openContainingFolderId, FALSE); }
@@ -3824,13 +3920,13 @@ public:
 		if (0 <= focused && static_cast<size_t>(focused) < this->results.size())
 		{
 			{
-				std::tstring name = _T("File #") + nformat_ui(this->results[static_cast<size_t>(focused)].key.frs);
-				MENUITEMINFO mii = { sizeof(mii), MIIM_ID | MIIM_STRING | MIIM_STATE, MFT_STRING, MFS_DISABLED, fileIdId, NULL, NULL, NULL, NULL, (name.c_str(), name.empty() ? NULL : &name[0]) };
+				RefCountedCString text = this->LoadString(IDS_MENU_FILE_NUMBER);
+				text += nformat_ui(this->results[static_cast<size_t>(focused)].key.frs).c_str();
+				MENUITEMINFO mii = { sizeof(mii), MIIM_ID | MIIM_STRING | MIIM_STATE, MFT_STRING, MFS_DISABLED, fileIdId, NULL, NULL, NULL, NULL, text };
 				menu.InsertMenuItem(ninserted++, TRUE, &mii);
 			}
 			{
-				std::tstring name = _T("Dump to table...");
-				MENUITEMINFO mii = { sizeof(mii), MIIM_ID | MIIM_STRING | MIIM_STATE, MFT_STRING, 0, dumpId, NULL, NULL, NULL, NULL, (name.c_str(), name.empty() ? NULL : &name[0]) };
+				MENUITEMINFO mii = { sizeof(mii), MIIM_ID | MIIM_STRING | MIIM_STATE, MFT_STRING, 0, dumpId, NULL, NULL, NULL, NULL, this->LoadString(IDS_MENU_DUMP_TO_TABLE) };
 				menu.InsertMenuItem(ninserted++, TRUE, &mii);
 			}
 		}
@@ -3856,10 +3952,18 @@ public:
 		}
 		else if (id == dumpId)
 		{
-			WTL::CFileDialog fdlg(FALSE, _T("csv"), NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, _T("Comma-separated values [UTF-8] (*.csv)\0*.csv\0Tab-separated values [UTF-8] (*.tsv)\0*.tsv\0\0"));
+			std::basic_string<TCHAR> file_dialog_save_options;
+			{
+				std::basic_stringstream<TCHAR> ss;
+				ss << this->LoadString(IDS_SAVE_OPTION_UTF8_CSV) << _T("\0") << _T("*.csv") << _T("\0");
+				ss << this->LoadString(IDS_SAVE_OPTION_UTF8_TSV) << _T("\0") << _T("*.tsv") << _T("\0");
+				ss << _T("\0");
+				file_dialog_save_options = ss.str();
+			}
+			WTL::CFileDialog fdlg(FALSE, _T("csv"), NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, file_dialog_save_options.c_str());
 			fdlg.m_ofn.lpfnHook = NULL;
 			fdlg.m_ofn.Flags &= ~OFN_ENABLEHOOK;
-			fdlg.m_ofn.lpstrTitle = _T("Save Table");
+			fdlg.m_ofn.lpstrTitle = this->LoadString(IDS_SAVE_TABLE_TITLE);
 			if (GetSaveFileName(&fdlg.m_ofn))
 			{
 				typedef tchar_ci_traits char_traits;
@@ -3870,7 +3974,7 @@ public:
 				if (output != NULL)
 				{
 					CProgressDialog dlg(*this);
-					dlg.SetProgressTitle(_T("Dumping table..."));
+					dlg.SetProgressTitle(this->LoadString(IDS_DUMPING_TITLE));
 					if (dlg.HasUserCancelled()) { return; }
 					std::string line_buffer_utf8;
 					std::tstring line_buffer, text_buffer;
@@ -3895,19 +3999,19 @@ public:
 									should_flush = true;
 									unsigned long const update_time = GetTickCount();
 									std::basic_ostringstream<TCHAR> ss;
-									ss << _T("Dumping selection ");
+									ss << this->LoadString(IDS_TEXT_DUMPING_SELECTION) << this->LoadString(IDS_TEXT_SPACE);
 									ss << nformat_ui(i + 1);
-									ss << _T(" of ");
+									ss << this->LoadString(IDS_TEXT_SPACE) << this->LoadString(IDS_TEXT_OF) << this->LoadString(IDS_TEXT_SPACE);
 									ss << nformat_ui(results.size());
 									if (update_time != prev_update_time)
 									{
-										ss << _T(" ");
-										ss << _T("(");
+										ss << this->LoadString(IDS_TEXT_SPACE);
+										ss << this->LoadString(IDS_TEXT_PAREN_OPEN);
 										ss << nformat_ui(nwritten_since_update * 1000U / ((update_time - prev_update_time) * 1ULL << 20));
-										ss << _T(" MiB/s");
-										ss << _T(")");
+										ss << this->LoadString(IDS_TEXT_SPACE) << this->LoadString(IDS_TEXT_MIB_S);
+										ss << this->LoadString(IDS_TEXT_PAREN_CLOSE);
 									}
-									ss << _T(":");
+									ss << this->LoadString(IDS_TEXT_COLON);
 									ss << std::endl;
 									ss << text_buffer;
 									std::tstring const &text = ss.str();
@@ -3970,7 +4074,7 @@ public:
 			}
 			else
 			{
-				this->MessageBox(GetAnyErrorText(hr), _T("Error"), MB_OK | MB_ICONERROR);
+				this->MessageBox(GetAnyErrorText(hr), this->LoadString(IDS_ERROR_TITLE), MB_OK | MB_ICONERROR);
 			}
 		}
 	}
@@ -4415,24 +4519,7 @@ public:
 
 	void OnHelpRegex(UINT /*uNotifyCode*/, int /*nID*/, CWindow /*wndCtl*/)
 	{
-		this->MessageBox(
-			_T("To find a file, select the drive you want to search, enter part of the file name or path, and click Search.\r\n\r\n")
-			_T("You can either use wildcards, which are the default, or regular expressions, which require starting the pattern with a '>' character.\r\n\r\n")
-			_T("Wildcards work the same as in Windows; regular expressions are implemented using the Boost.Xpressive library.\r\n\r\n")
-			_T("Some common regular expressions:\r\n")
-			_T(".\t= A single character\r\n")
-			_T("\\+\t= A plus symbol (backslash is the escape character)\r\n")
-			_T("[a-cG-K]\t= A single character from a to c or from G to K\r\n")
-			_T("(abc|def)\t= Either \"abc\" or \"def\"\r\n\r\n")
-			_T("\"Quantifiers\" can follow any expression:\r\n")
-			_T("*\t= Zero or more occurrences\r\n")
-			_T("+\t= One or more occurrences\r\n")
-			_T("{m,n}\t= Between m and n occurrences (n is optional)\r\n\r\n")
-			_T("Examples of regular expressions:\r\n")
-			_T("Hi{2,}.*Bye= At least two occurrences of \"Hi\", followed by any number of characters, followed by \"Bye\"\r\n")
-			_T(".*\t= At least zero characters\r\n")
-			_T("Hi.+\\+Bye\t= At least one character between \"Hi\" and \"+Bye\"\r\n")
-		, _T("Regular expressions"), MB_ICONINFORMATION);
+		this->MessageBox(this->LoadString(IDS_HELP_REGEX_BODY), this->LoadString(IDS_HELP_REGEX_TITLE), MB_ICONINFORMATION);
 	}
 
 	void OnViewLargeIcons(UINT /*uNotifyCode*/, int /*nID*/, CWindow /*wndCtl*/)
@@ -4533,7 +4620,7 @@ public:
 		}
 	}
 
-	BEGIN_MSG_MAP_EX(CMainDlg)
+	BEGIN_MSG_MAP_EX2(CMainDlg)
 		CHAIN_MSG_MAP(CInvokeImpl<CMainDlg>)
 		CHAIN_MSG_MAP(CDialogResize<CMainDlg>)
 		MSG_WM_DESTROY(OnDestroy)
@@ -4579,6 +4666,17 @@ WTL::CAppModule _Module;
 
 int _tmain(int argc, TCHAR* argv[])
 {
+#if 0
+	std::locale loc("");
+	typedef std::num_put<TCHAR, std::insert_iterator<std::basic_string<TCHAR> > > NumPut;
+	auto temp = new NumPut(loc.name().c_str(), 0);
+	std::tstring out;
+	std::basic_stringstream<TCHAR> ss;
+	ss.imbue(loc);
+	// ss << 123456789012345678ULL;
+	temp->put(std::inserter(out, out.end()), ss, ss.fill(), 123456789012345678ULL);
+	std::_USE(loc, NumPut);
+#endif
 	if (!IsDebuggerPresent())
 	{
 		HMODULE hKernel32 = NULL;

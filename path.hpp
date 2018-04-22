@@ -36,7 +36,10 @@ template<class It1, class It2>
 std::pair<typename reverse_iterator_impl<It2>::reverse_iterator, typename reverse_iterator_impl<It1>::reverse_iterator> make_pair_reverse_iterator(std::pair<It1, It2> const p)
 { return std::make_pair(make_reverse_iterator(p.second), make_reverse_iterator(p.first)); }
 
-inline bool isdirsep(const wchar_t c) { return c == L'/' || c == L'\\'; }
+inline wchar_t getdirsep() { return L'\\'; }
+inline wchar_t getaltdirsep() { return L'/'; }
+
+inline bool isdirsep(const wchar_t c) { return c == getaltdirsep() || c == getdirsep(); }
 
 template<class It>
 bool isrooted(const It &begin, const It &end)
@@ -75,7 +78,7 @@ Str &adddirsep(Str &str)
 {
 	if (str.begin() != str.end() && !isdirsep(*(str.end() - 1)))
 	{
-		typename Str::value_type ch = _T('\\');
+		typename Str::value_type ch = getdirsep();
 		for (typename Str::const_iterator it = str.end(); it != str.begin(); --it)
 		{
 			if (isdirsep(*(it - 1)))
