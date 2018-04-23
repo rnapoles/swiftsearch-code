@@ -5,8 +5,10 @@
 
 #pragma warning(disable: 4062)  // enumerator in switch of enum is not handled
 #pragma warning(disable: 4100)  // unreferenced formal parameter
+#pragma warning(disable: 4191)  // 'reinterpret_cast': unsafe conversion
 #pragma warning(disable: 4290)  // C++ exception specification ignored except to indicate a function is not __declspec(nothrow)
 #pragma warning(disable: 4324)  // structure was padded due to __declspec(align())
+#pragma warning(disable: 4365)  // conversion, signed/unsigned mismatch
 #pragma warning(disable: 4458)  // declaration of 'field' hides class member
 #pragma warning(disable: 4459)  // declaration of 'identifier' hides global declaration
 #pragma warning(disable: 4623)  // default constructor was implicitly defined as deleted

@@ -33,8 +33,10 @@ namespace WTL { using std::min; using std::max; }
 
 #include <Windows.h>
 #include <Dbt.h>
+#include <muiload.h>
 #include <ProvExce.h>
 #include <ShlObj.h>
+#include <WinNLS.h>
 
 #include <atlbase.h>
 #include <atlapp.h>
@@ -91,7 +93,104 @@ extern WTL::CAppModule _Module;
 #define BEGIN_MSG_MAP_EX2(Type) BEGIN_MSG_MAP_EX(Type)
 #endif
 
-namespace std { typedef basic_string<TCHAR> tstring; }
+template<class T, class Traits = std::char_traits<T>, class Ax = std::allocator<T> >
+class basic_vector_based_string : public std::vector<T, Ax>
+{
+	typedef basic_vector_based_string this_type;
+	typedef std::vector<T, Ax> base_type;
+	typedef std::basic_string<T, Traits, Ax> string_type;
+public:
+	typedef Traits traits_type;
+	typedef typename base_type::size_type size_type;
+	typedef typename base_type::difference_type difference_type;
+	typedef typename base_type::allocator_type allocator_type;
+	typedef typename base_type::value_type const *const_pointer;
+	typedef typename base_type::value_type value_type;
+	typedef typename base_type::iterator iterator;
+	typedef typename base_type::const_iterator const_iterator;
+	using base_type::erase;
+	using base_type::insert;
+	static size_type const npos = ~size_type();
+	this_type() : base_type() { }
+	explicit this_type(const_pointer const value, size_t const n = npos) : base_type(value, value + static_cast<ptrdiff_t>(n == npos ? Traits::length(value) : n)) { }
+	explicit this_type(size_type const n) : base_type(n) { }
+	explicit this_type(size_type const n, value_type const &value) : base_type(n, value) { }
+	explicit this_type(size_type const n, allocator_type const &ax) : base_type(n, ax) { }
+	explicit this_type(size_type const n, value_type const &value, allocator_type const &ax) : base_type(n, value, ax) { }
+	void append(size_t const n, value_type const &value)
+	{
+		if (!n) { return; }
+#if defined(_MSC_VER) && !defined(_CPPLIB_VER)
+		if (this->_End - this->_Last < static_cast<ptrdiff_t>(n))
+		{
+			this->reserve(this->size() + n);
+			for (size_t i = 0; i != n; ++i)
+			{
+				this->push_back(value);
+			}
+		}
+		else
+		{
+			std::uninitialized_fill(this->_Last, this->_Last + static_cast<ptrdiff_t>(n), value);
+			this->_Last += n;
+		}
+#else
+		this->reserve(this->size() + n);
+		for (size_t i = 0; i != n; ++i)
+		{
+			this->push_back(value);
+		}
+#endif
+	}
+	void append(const_pointer const begin, const_pointer const end)
+	{
+#if defined(_MSC_VER) && !defined(_CPPLIB_VER)
+		ptrdiff_t const n = end - begin;
+		if (this->_End - this->_Last < n)
+		{
+			this->insert(this->end(), begin, end);
+		}
+		else
+		{
+			std::uninitialized_copy(begin, end, this->_Last);
+			this->_Last += n;
+		}
+#else
+		this->insert(this->end(), begin, end);
+#endif
+	}
+	void append(const_pointer const value, size_type n = npos) { return this->append(value, value + static_cast<ptrdiff_t>(n == npos ? Traits::length(value) : n)); }
+	this_type &operator =(const_pointer const value) { this->clear(); this->append(value); return *this; }
+	this_type &operator+=(base_type const &value) { if (!value.empty()) { this->append(&*value.begin(), &*(value.end() - 1) + 1); } return *this; }
+	size_type find(value_type const &value) const { const_iterator begin = this->begin(), end = this->end(); size_type result = static_cast<size_type>(std::find(begin, end, value) - begin); if (result >= static_cast<size_type>(end - begin)) { result = npos; } return result; }
+	const_pointer c_str() { const_pointer p; size_t const n = this->size(); if (n == 0 || this->capacity() <= n || *(&*this->begin() + static_cast<ptrdiff_t>(n)) != value_type()) { this->push_back(value_type()); p = &*this->begin(); this->pop_back(); } else { p = &*this->begin(); } return p; }
+	const_pointer data() const { return this->empty() ? NULL :&*this->begin(); }
+	iterator erase(size_t const pos, size_type const n = npos)
+	{ return this->erase(this->begin() + static_cast<difference_type>(pos), this->begin() + static_cast<difference_type>(pos) + (n == npos ? this->size() - pos : n)); }
+	iterator insert(iterator const i, const_pointer const value, size_type const n = npos)
+	{ size_type const pos = static_cast<size_type>(i - this->begin()); this->insert(i, value, value + static_cast<ptrdiff_t>(n == npos ? Traits::length(value) : n)); return this->begin() + static_cast<difference_type>(pos); }
+	iterator insert(size_t const pos, const_pointer const value, size_type const n = npos)
+	{ return this->insert(this->begin() + static_cast<difference_type>(pos), value, n); }
+	this_type operator +(base_type const &other) const { this_type result; result.reserve(this->size() + other.size()); result += *this; result += other; return result; }
+#if defined(_MSC_VER) && !defined(_CPPLIB_VER)
+	void push_back(value_type const &value)
+	{
+		if (this->_Last != this->_End)
+		{
+			this->allocator.construct(this->_Last, value);
+			++this->_Last;
+		}
+		else
+		{
+			this->base_type::push_back(value);
+		}
+	}
+#endif
+	friend this_type operator +(const_pointer const left, base_type const &right) { size_t const nleft = Traits::length(left); this_type result; result.reserve(nleft + right.size()); result.append(left, nleft); result += right; return result; }
+	friend string_type &operator+=(string_type &out, this_type const &me) { out.append(me.begin(), me.end()); return out; }
+};
+
+namespace std { typedef basic_string<TCHAR> tstring; typedef basic_vector_based_string<TCHAR> tvstring; }
 namespace std
 {
 	template<class> struct is_scalar;
@@ -324,12 +423,19 @@ inline bool wildcard(TCHAR const *patBegin, TCHAR const *const patEnd, It2 strBe
 	}
 }
 
-static void append(std::tstring &str, TCHAR const sz[], size_t const cch)
+static void append_reverse(std::vector<TCHAR> &str, TCHAR const sz[], size_t const cch)
 {
 	size_t const n = str.size();
 	if (n + cch > str.capacity())
 	{ str.reserve(n + n / 2 + cch * 2); }
-	str.append(sz, cch);
+#if defined(_MSC_VER) && !defined(_CPPLIB_VER)
+	struct Derived : std::vector<TCHAR> { using std::vector<TCHAR>::_Last; };
+	// we have enough capacity, so just extend
+	static_cast<Derived &>(str)._Last += static_cast<ptrdiff_t>(cch);
+	std::reverse_copy(sz, sz + static_cast<ptrdiff_t>(cch), str.end() - static_cast<ptrdiff_t>(cch));
+#else
+	str.insert(str.end(), std::reverse_iterator<TCHAR const *>(sz + static_cast<ptrdiff_t>(cch)), std::reverse_iterator<TCHAR const *>(sz));
+#endif
 }
 
 namespace winnt
@@ -605,21 +711,21 @@ namespace ntfs
 	};
 }
 
-std::tstring NormalizePath(std::tstring const &path)
+std::tvstring NormalizePath(std::tvstring const &path)
 {
-	std::tstring result;
+	std::tvstring result;
 	bool wasSep = false;
 	bool isCurrentlyOnPrefix = true;
 	for (size_t i = 0; i < path.size(); i++)
 	{
 		TCHAR const &c = path[i];
 		isCurrentlyOnPrefix &= isdirsep(c);
-		if (isCurrentlyOnPrefix || !wasSep || !isdirsep(c)) { result += c; }
+		if (isCurrentlyOnPrefix || !wasSep || !isdirsep(c)) { result.push_back(c); }
 		wasSep = isdirsep(c);
 	}
 	if (!isrooted(result.begin(), result.end()))
 	{
-		std::tstring currentDir(32 * 1024, _T('\0'));
+		std::tvstring currentDir(32 * 1024, _T('\0'));
 		currentDir.resize(GetCurrentDirectory(static_cast<DWORD>(currentDir.size()), &currentDir[0]));
 		adddirsep(currentDir);
 		result = currentDir + result;
@@ -644,7 +750,7 @@ std::tstring GetDisplayName(HWND hWnd, const std::tstring &path, DWORD shgdn)
 	return result;
 }
 
-void CheckAndThrow(int const success) { if (!success) { RaiseException(GetLastError(), 0, 0, NULL); } }
+void CheckAndThrow(int const success) { if (!success) { unsigned long const last_error = GetLastError(); RaiseException(last_error, 0, 0, NULL); } }
 
 LPTSTR GetAnyErrorText(DWORD errorCode, va_list* pArgList = NULL)
 {
@@ -680,6 +786,41 @@ public:
 	operator void *() const { return this->value; }
 	void swap(Handle &other) { using std::swap; swap(this->value, other.value); }
 	friend void swap(Handle &a, Handle &b) { return a.swap(b); }
+};
+
+class IoPriority
+{
+	uintptr_t _volume;
+	winnt::IO_PRIORITY_HINT _old;
+	IoPriority &operator =(IoPriority const &);
+public:
+	static winnt::IO_PRIORITY_HINT query(uintptr_t const file)
+	{
+		winnt::FILE_IO_PRIORITY_HINT_INFORMATION old = { winnt::IoPriorityNormal };
+		winnt::IO_STATUS_BLOCK iosb;
+		winnt::NtQueryInformationFile(reinterpret_cast<HANDLE>(file), &iosb, &old, sizeof(old), 43);
+		return old.PriorityHint;
+	}
+	static void set(uintptr_t const volume, winnt::IO_PRIORITY_HINT const value)
+	{
+		if (value != winnt::MaxIoPriorityTypes)
+		{
+			winnt::IO_STATUS_BLOCK iosb;
+			winnt::FILE_IO_PRIORITY_HINT_INFORMATION io_priority = { value };
+			winnt::NTSTATUS const status = winnt::NtSetInformationFile(reinterpret_cast<HANDLE>(volume), &iosb, &io_priority, sizeof(io_priority), 43);
+			if (status != 0 && status != 0xC0000003 /*STATUS_INVALID_INFO_CLASS*/ && status != 0xC0000008 /* STATUS_INVALID_HANDLE */ && status != 0xC0000024 /* STATUS_OBJECT_TYPE_MISMATCH */)
+			{
+				unsigned long const error = winnt::RtlNtStatusToDosError(status);
+				if (error) { SetLastError(error); CheckAndThrow(!error); }
+			}
+		}
+	}
+	uintptr_t volume() const { return this->_volume; }
+	IoPriority() : _volume(), _old() { }
+	IoPriority(IoPriority const &other) : _volume(other._volume), _old() { this->_old = winnt::MaxIoPriorityTypes; }
+	explicit IoPriority(uintptr_t const volume, winnt::IO_PRIORITY_HINT const priority) : _volume(volume), _old(query(volume)) { set(volume, priority); }
+	~IoPriority() { if (this->_volume) { set(this->_volume, this->_old); } }
+	void swap(IoPriority &other) { using std::swap; swap(this->_volume, other._volume); swap(this->_old, other._old); }
 };
 
 template<class T, class Alloc =
@@ -1199,9 +1340,9 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	friend struct std::is_scalar<Record>;
 	mutable mutex _mutex;
 	bool _init_called, _failed;
-	std::tstring _root_path;
+	std::tvstring _root_path;
 	Handle _volume;
-	std::tstring names;
+	std::tvstring names;
 	Records records_data;
 	RecordsLookup records_lookup;
 	LinkInfos nameinfos;
@@ -1277,7 +1418,7 @@ public:
 	typedef SizeInfo size_info;
 	unsigned int mft_record_size;
 	unsigned int mft_capacity;
-	NtfsIndex(std::tstring value) : _init_called(), _failed(), _root_path(value), _finished_event(CreateEvent(NULL, TRUE, FALSE, NULL)), _total_names_and_streams(), _records_so_far(0), _perf_reports_circ(1 << 6), _perf_reports_begin(), _expected_records(0), _cancelled(false), mft_record_size(), mft_capacity()
+	NtfsIndex(std::tvstring value) : _init_called(), _failed(), _root_path(value), _finished_event(CreateEvent(NULL, TRUE, FALSE, NULL)), _total_names_and_streams(), _records_so_far(0), _perf_reports_circ(1 << 6), _perf_reports_begin(), _expected_records(0), _cancelled(false), mft_record_size(), mft_capacity()
 	{
 	}
 	~NtfsIndex()
@@ -1288,25 +1429,24 @@ public:
 	{
 		this->_init_called = true;
 		bool success = false;
-		std::tstring dirseps;
-		dirseps.append(1, _T('\\'));
-		dirseps.append(1, _T('/'));
+		std::tvstring dirseps;
+		dirseps.push_back(_T('\\'));
+		dirseps.push_back(_T('/'));
 		try
 		{
-			std::tstring path_name = this->_root_path;
-			path_name.erase(path_name.begin() + static_cast<ptrdiff_t>(path_name.size() - std::min(path_name.find_last_not_of(dirseps), path_name.size())), path_name.end());
-			if (!path_name.empty() && *path_name.begin() != _T('\\') && *path_name.begin() != _T('/')) { path_name.insert(0, _T("\\\\.\\")); }
+			std::tvstring path_name = this->_root_path;
+			while (!path_name.empty() && isdirsep(path_name.back()))
+			{
+				path_name.pop_back();
+			}
+			if (!path_name.empty() && *path_name.begin() != _T('\\') && *path_name.begin() != _T('/')) { path_name.insert(static_cast<size_t>(0), _T("\\\\.\\")); }
 			Handle volume(CreateFile(path_name.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL));
 			winnt::IO_STATUS_BLOCK iosb;
 			struct : winnt::FILE_FS_ATTRIBUTE_INFORMATION { unsigned char buf[MAX_PATH]; } info = {};
 			if (winnt::NtQueryVolumeInformationFile(volume.value, &iosb, &info, sizeof(info), 5) ||
 				info.FileSystemNameLength != 4 * sizeof(*info.FileSystemName) || std::char_traits<TCHAR>::compare(info.FileSystemName, _T("NTFS"), 4))
 			{ throw std::invalid_argument("invalid volume"); }
-			if (false)
-			{
-				winnt::FILE_IO_PRIORITY_HINT_INFORMATION io_priority = { winnt::IoPriorityLow };
-				winnt::NtSetInformationFile(volume, &iosb, &io_priority, sizeof(io_priority), 43);
-			}
+			// IoPriority::set(reinterpret_cast<uintptr_t>(volume.value), winnt::IoPriorityLow);
 			volume.swap(this->_volume);
 			success = true;
 		}
@@ -1329,7 +1469,7 @@ public:
 		total = this->_perf_avg_speed;
 		return total;
 	}
-	std::tstring const &root_path() const { return this->_root_path; }
+	std::tvstring const &root_path() const { return this->_root_path; }
 	bool failed() const
 	{
 		return this->_failed;
@@ -1488,7 +1628,7 @@ public:
 								info->name.offset = static_cast<unsigned int>(this->names.size());
 								info->name.length = static_cast<unsigned char>(fn->FileNameLength);
 								info->parent = frs_parent;
-								append(this->names, fn->FileName, fn->FileNameLength);
+								this->names.append(fn->FileName, fn->FileNameLength);
 								Records::iterator const parent = this->at(frs_parent, &base_record);
 								size_t const child_index = this->childinfos.size();
 								this->childinfos.push_back(ChildInfo::empty);
@@ -1542,7 +1682,7 @@ public:
 								{
 									info->name.offset = static_cast<unsigned int>(this->names.size());
 									info->name.length = static_cast<unsigned char>(ah->NameLength);
-									append(this->names, ah->name(), ah->NameLength);
+									this->names.append(ah->name(), ah->NameLength);
 								}
 								info->type_name_id = static_cast<unsigned char>((ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && isI30 ? 0 : ah->Type >> (CHAR_BIT / 2));
 								info->length = ah->IsNonResident ? static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... */ : ah->NonResident.DataSize) : ah->Resident.ValueLength;
@@ -1578,7 +1718,7 @@ public:
 		this->_perf_reports_begin = (this->_perf_reports_begin + 1) % this->_perf_reports_circ.size();
 	}
 
-	size_t get_path(key_type key, std::tstring &result, bool const name_only) const
+	size_t get_path(key_type key, std::tvstring &result, bool const name_only) const
 	{
 		bool wait_for_finish = false;  // has performance penalty
 		if (wait_for_finish && !name_only && WaitForSingleObject(this->_finished_event, 0) == WAIT_TIMEOUT) { return 0; }
@@ -1601,22 +1741,22 @@ public:
 						{
 							found = true;
 							size_t const old_size2 = result.size();
-							append(result, &this->names[j->name.offset], j->name.length);
+							if (key.frs != 0x000000000005)
+							{
+								if (!k->type_name_id) { result.push_back(_T('\\')); }
+							}
 							if (leaf)
 							{
 								bool const is_alternate_stream = k->type_name_id && (k->type_name_id << (CHAR_BIT / 2)) != ntfs::AttributeData;
-								if (k->name.length || is_alternate_stream) { result += _T(':'); }
-								append(result, k->name.length ? &this->names[k->name.offset] : NULL, k->name.length);
 								if (is_alternate_stream && k->type_name_id < sizeof(ntfs::attribute_names) / sizeof(*ntfs::attribute_names))
 								{
-									result += _T(':'); append(result, ntfs::attribute_names[k->type_name_id].data, ntfs::attribute_names[k->type_name_id].size);
+									append_reverse(result, ntfs::attribute_names[k->type_name_id].data, ntfs::attribute_names[k->type_name_id].size);
+									result.push_back(_T(':'));
 								}
+								append_reverse(result, k->name.length ? &this->names[k->name.offset] : NULL, k->name.length);
+								if (k->name.length || is_alternate_stream) { result.push_back(_T(':')); }
 							}
-							if (key.frs != 0x000000000005)
-							{
-								if (!k->type_name_id) { result += _T('\\'); }
-							}
-							std::reverse(result.begin() + static_cast<ptrdiff_t>(old_size2), result.end());
+							append_reverse(result, &this->names[j->name.offset], j->name.length);
 							key_type const new_key = { j->parent /* ... | 0 | 0 (since we want the first name of all ancestors)*/, static_cast<key_type::name_info_type>(~key_type::name_info_type()), static_cast<key_type::stream_info_type>(~key_type::stream_info_type()), static_cast<key_type::direct_address_type>(std::numeric_limits<key_type::direct_address_type>::max() / 2 + 1) };
 							key = new_key;
 						}
@@ -1646,7 +1786,7 @@ public:
 	}
 
 	template<class F>
-	void matches(F func, std::tstring &path, bool const match_paths, bool const match_streams) const
+	void matches(F func, std::tvstring &path, bool const match_paths, bool const match_streams) const
 	{
 		Matcher<F &> matcher = { this, func, match_paths, match_streams, &path, 0 };
 		return matcher(0x000000000005);
@@ -1660,9 +1800,9 @@ private:
 		F func;
 		bool match_paths;
 		bool match_streams;
-		std::tstring *path;
+		std::tvstring *path;
 		size_t basename_index_in_path;
-		std::pair<std::tstring::const_iterator, std::tstring::const_iterator> name;
+		std::pair<std::tvstring::const_iterator, std::tvstring::const_iterator> name;
 		size_t depth;
 
 		void operator()(key_type::frs_type const frs)
@@ -1681,7 +1821,7 @@ private:
 		void operator()(key_type::frs_type const frs, key_type::name_info_type const name_info, TCHAR const stream_prefix [], size_t const stream_prefix_size)
 		{
 			bool const buffered_matching = stream_prefix_size || match_paths || match_streams;
-			std::tstring const empty_string;
+			std::tvstring const empty_string;
 			if (frs < me->records_lookup.size() && (frs == 0x00000005 || frs >= 0x00000010))
 			{
 				size_t const islot = me->records_lookup[frs];
@@ -1698,12 +1838,12 @@ private:
 						{
 							size_t const old_size = path->size();
 							size_t old_basename_index_in_path = basename_index_in_path;
-							std::pair<std::tstring::const_iterator, std::tstring::const_iterator> old_name = name;
+							std::pair<std::tvstring::const_iterator, std::tvstring::const_iterator> old_name = name;
 							if (buffered_matching)
 							{
-								if (match_paths || match_streams) { *path += _T('\\'); }
+								if (match_paths || match_streams) { path->push_back(_T('\\')); }
 								basename_index_in_path = path->size();
-								append(*path, &me->names[j->name.offset], j->name.length);
+								path->append(&me->names[j->name.offset], j->name.length);
 							}
 							name.first = me->names.begin() + static_cast<ptrdiff_t>(j->name.offset);
 							name.second = name.first + static_cast<ptrdiff_t>(j->name.length);
@@ -1729,31 +1869,31 @@ private:
 					size_t const old_size = path->size();
 					if (stream_prefix_size)
 					{
-						append(*path, stream_prefix, stream_prefix_size);
+						path->append(stream_prefix, stream_prefix_size);
 					}
 					if (match_paths || match_streams)
 					{
 						if ((fr->stdinfo.attributes() & FILE_ATTRIBUTE_DIRECTORY) && frs != 0x00000005)
 						{
-							*path += _T('\\');
+							path->push_back(_T('\\'));
 						}
 					}
 					if (match_streams)
 					{
 						if (k->name.length)
 						{
-							*path += _T(':');
-							append(*path, k->name.length ? &me->names[k->name.offset] : NULL, k->name.length);
+							path->push_back(_T(':'));
+							path->append(k->name.length ? &me->names[k->name.offset] : NULL, k->name.length);
 						}
 						bool const is_alternate_stream = k->type_name_id && (k->type_name_id << (CHAR_BIT / 2)) != ntfs::AttributeData;
 						if (is_alternate_stream)
 						{
-							if (!k->name.length) { *path += _T(':'); }
-							*path += _T(':'), append(*path, ntfs::attribute_names[k->type_name_id].data, ntfs::attribute_names[k->type_name_id].size);
+							if (!k->name.length) { path->push_back(_T(':')); }
+							path->push_back(_T(':')), path->append(ntfs::attribute_names[k->type_name_id].data, ntfs::attribute_names[k->type_name_id].size);
 						}
 					}
 					key_type const new_key = { frs, name_info, ki, k == k0 ? ~static_cast<key_type::direct_address_type>(islot) : static_cast<key_type::direct_address_type>(k - &*me->streaminfos.begin()) };
-					func(buffered_matching ? std::pair<std::tstring::const_iterator, std::tstring::const_iterator>(path->begin() + (match_paths ? 0 : static_cast<ptrdiff_t>(basename_index_in_path)), path->end()) : name, new_key, depth);
+					func(buffered_matching ? std::pair<std::tvstring::const_iterator, std::tvstring::const_iterator>(path->begin() + (match_paths ? 0 : static_cast<ptrdiff_t>(basename_index_in_path)), path->end()) : name, new_key, depth);
 					if (buffered_matching)
 					{
 						path->erase(old_size, path->size() - old_size);
@@ -1764,19 +1904,6 @@ private:
 	};
 };
 NtfsIndex::ChildInfo const NtfsIndex::ChildInfo::empty;
-
-template<typename Str, typename S1, typename S2>
-void replace_all(Str &str, S1 from, S2 to)
-{
-	size_t const nFrom = Str(from).size();  // SLOW but OK because this function is O(n^2) anyway
-	size_t const nTo = Str(to).size();  // SLOW but OK because this function is O(n^2) anyway
-	for (size_t i = 0; (i = str.find_first_of(from, i)) != Str::npos; i += nTo)
-	{
-		str.erase(i, nFrom);
-		str.insert(i, to);
-	}
-}
-
 
 namespace std
 {
@@ -1959,8 +2086,8 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 
 public:
 	enum { UPDATE_INTERVAL = 1000 / 60 };
-	CProgressDialog(ATL::CWindow parent)
-		: Base(true), parent(parent), lastUpdateTime(0), creationTime(GetTickCount()), lastProgress(0), lastProgressTotal(1), invalidated(false), canceled(false), windowCreated(false), windowCreateAttempted(false)
+	CProgressDialog(ATL::CWindow parent, bool const rtl)
+		: Base(true, rtl), parent(parent), lastUpdateTime(0), creationTime(GetTickCount()), lastProgress(0), lastProgressTotal(1), invalidated(false), canceled(false), windowCreated(false), windowCreateAttempted(false)
 	{
 	}
 
@@ -2070,6 +2197,184 @@ public:
 	}
 };
 
+class IoCompletionPort : public RefCounted<IoCompletionPort>
+{
+	typedef IoCompletionPort this_type;
+	IoCompletionPort(this_type const &);
+	this_type &operator =(this_type const &);
+	struct Task
+	{
+		HANDLE file;
+		void *buffer;
+		unsigned long cb;
+		boost::intrusive_ptr<Overlapped> overlapped;
+		Task() : file(), buffer(), cb() { }
+		explicit Task(void *const buffer, unsigned long const cb, boost::intrusive_ptr<Overlapped> const &overlapped) : buffer(buffer), cb(cb), overlapped(overlapped) { }
+	};
+	typedef std::vector<Task> Pending;
+	static unsigned int CALLBACK iocp_worker(void *me)
+	{
+		return static_cast<this_type volatile *>(me)->worker();
+	}
+	static unsigned long get_num_threads()
+	{
+		unsigned long num_threads = 0;
+#ifdef _OPENMP
+#pragma omp parallel
+#pragma omp atomic
+		++num_threads;
+#else
+		TCHAR const *const omp_num_threads = _tgetenv(_T("OMP_NUM_THREADS"));
+		if (int const n = omp_num_threads ? _ttoi(omp_num_threads) : 0)
+		{
+			num_threads = static_cast<int>(n);
+		}
+		else
+		{
+			SYSTEM_INFO sysinfo;
+			GetSystemInfo(&sysinfo);
+			num_threads = sysinfo.dwNumberOfProcessors;
+		}
+#endif
+		return num_threads;
+	}
+	unsigned int worker() volatile
+	{
+		ULONG_PTR key;
+		OVERLAPPED *overlapped_ptr;
+		Overlapped *p;
+		HANDLE const handle = this->_handle;
+		for (unsigned long nr; GetQueuedCompletionStatus(handle, &nr, &key, &overlapped_ptr, INFINITE);)
+		{
+			p = static_cast<Overlapped *>(overlapped_ptr);
+			boost::intrusive_ptr<Overlapped> overlapped(p, false);
+			if (overlapped.get())
+			{
+				int r = (*overlapped)(static_cast<size_t>(nr), key);
+				if (r > 0) { r = PostQueuedCompletionStatus(handle, nr, key, overlapped_ptr) ? 0 : -1; }
+				if (r >= 0) { overlapped.detach(); }
+			}
+			else if (key == 1)
+			{
+				size_t found = ~size_t();
+				Task task;
+				{
+					lock_ptr<this_type> const me_lock(this);
+					size_t &pending_scan_offset = const_cast<size_t &>(this->_pending_scan_offset);
+					Pending &pending = const_cast<Pending &>(this->_pending);
+					winnt::IO_PRIORITY_HINT found_priority = winnt::MaxIoPriorityTypes;
+					for (size_t o = 0; o != pending.size(); ++o)
+					{
+						if (pending_scan_offset == 0 || pending_scan_offset > pending.size()) { pending_scan_offset = pending.size(); }
+						--pending_scan_offset;
+						size_t const i = pending_scan_offset;
+						winnt::IO_PRIORITY_HINT const curr_priority = IoPriority::query(reinterpret_cast<uintptr_t>(pending[i].file));
+						if (found_priority == winnt::MaxIoPriorityTypes || curr_priority > found_priority)
+						{
+							found = i;
+							found_priority = curr_priority;
+						}
+					}
+					if (found < pending.size())
+					{
+						pending_scan_offset = found;
+						task = pending[found];
+						pending.erase(pending.begin() + static_cast<ptrdiff_t>(found));
+					}
+				}
+				if (~found)
+				{
+					this->enqueue(task);
+				}
+			}
+			else if (key == 0) { break; }
+		}
+		return 0;
+	}
+	void enqueue(Task &task) volatile
+	{
+		if (!task.cb || ReadFile(task.file, task.buffer, task.cb, NULL, task.overlapped.get()))
+		{
+			this->post(task.cb, 0, task.overlapped);
+		}
+		else
+		{
+			CheckAndThrow(GetLastError() == ERROR_IO_PENDING);
+			task.overlapped.detach();
+		}
+	}
+	Handle _handle;
+	atomic_namespace::atomic<bool> _initialized;
+	std::vector<uintptr_t> _threads;
+	mutable mutex _mutex;
+	Pending _pending;
+	size_t _pending_scan_offset;
+public:
+	~IoCompletionPort() { this->close(); }
+	IoCompletionPort() : _handle(CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0)), _initialized(false), _pending_scan_offset() { }
+	this_type *unvolatile() volatile { return const_cast<this_type *>(this); }
+	this_type const *unvolatile() const volatile { return const_cast<this_type *>(this); }
+	mutex &get_mutex() const volatile { return this->unvolatile()->_mutex; }
+	void ensure_initialized()
+	{
+		if (this->_threads.empty())
+		{
+			for (size_t i = static_cast<size_t>(get_num_threads()); i != 0; --i)
+			{
+				unsigned int id;
+				this->_threads.push_back(_beginthreadex(NULL, 0, iocp_worker, this, 0, &id));
+			}
+			this->_initialized.store(true, atomic_namespace::memory_order_release);
+		}
+	}
+	void ensure_initialized() volatile
+	{
+		if (!this->_initialized.load(atomic_namespace::memory_order_acquire))
+		{
+			lock(this)->ensure_initialized();
+		}
+	}
+	void post(unsigned long cb, uintptr_t const key, boost::intrusive_ptr<Overlapped> overlapped) volatile
+	{
+		this->ensure_initialized();
+		CheckAndThrow(!!PostQueuedCompletionStatus(this->_handle, cb, key, overlapped.get()));
+		overlapped.detach();
+	}
+	void read_file(HANDLE const file, void *const buffer, unsigned long const cb, boost::intrusive_ptr<Overlapped> const &overlapped) volatile
+	{
+		// This part needs a lock
+		{
+			lock_ptr<this_type> const me_lock(this);
+			Pending &pending = const_cast<Pending &>(this->_pending);
+			pending.push_back(Task());
+			Task &task = pending.back();
+			task.file = file;
+			task.buffer = buffer;
+			task.cb = cb;
+			task.overlapped = overlapped;
+		}
+		this->post(0, 1, NULL);
+	}
+	void associate(HANDLE const file, uintptr_t const key) volatile
+	{
+		this->ensure_initialized();
+		CheckAndThrow(!!CreateIoCompletionPort(file, this->_handle, key, 0));
+	}
+	void close() volatile { return lock(this)->close(); }
+	void close()
+	{
+		for (size_t i = 0; i != this->_threads.size(); ++i)
+		{ this->post(0, 0, NULL); }
+		while (!this->_threads.empty())
+		{
+			size_t n = std::min(this->_threads.size(), static_cast<size_t>(MAXIMUM_WAIT_OBJECTS));
+			WaitForMultipleObjects(static_cast<unsigned long>(n), reinterpret_cast<void *const *>(&*this->_threads.begin() + this->_threads.size() - n), TRUE, INFINITE);
+			while (n) { this->_threads.pop_back(); --n; }
+		}
+		this->_initialized.store(false, atomic_namespace::memory_order_release);
+	}
+};
+
 class OverlappedNtfsMftReadPayload : public Overlapped
 {
 	struct RetPtr
@@ -2091,7 +2396,7 @@ class OverlappedNtfsMftReadPayload : public Overlapped
 	};
 	typedef std::vector<RetPtr> RetPtrs;
 	typedef std::vector<unsigned char> Bitmap;
-	Handle iocp;
+	boost::intrusive_ptr<IoCompletionPort volatile> iocp;
 	HWND m_hWnd;
 	Handle closing_event;
 	RetPtrs bitmap_ret_ptrs, data_ret_ptrs;
@@ -2106,12 +2411,12 @@ public:
 	~OverlappedNtfsMftReadPayload()
 	{
 	}
-	OverlappedNtfsMftReadPayload(Handle const &iocp, boost::intrusive_ptr<NtfsIndex volatile> p, HWND const m_hWnd, Handle const &closing_event)
+	OverlappedNtfsMftReadPayload(boost::intrusive_ptr<IoCompletionPort> const &iocp, boost::intrusive_ptr<NtfsIndex volatile> p, HWND const m_hWnd, Handle const &closing_event)
 		: Overlapped(), iocp(iocp), m_hWnd(m_hWnd), closing_event(closing_event), valid_records(0), cluster_size(), read_block_size(1 << 20), jbitmap(0), nbitmap_chunks_left(0), jdata(0)
 	{
 		using std::swap; swap(p, this->p);
 	}
-	bool queue_next() volatile;
+	void queue_next() volatile;
 	int operator()(size_t const /*size*/, uintptr_t const /*key*/);
 };
 class OverlappedNtfsMftReadPayload::ReadOperation : public Overlapped
@@ -2258,10 +2563,9 @@ public:
 mutex OverlappedNtfsMftReadPayload::ReadOperation::recycled_mutex;
 std::vector<std::pair<size_t, void *> > OverlappedNtfsMftReadPayload::ReadOperation::recycled;
 
-bool OverlappedNtfsMftReadPayload::queue_next() volatile
+void OverlappedNtfsMftReadPayload::queue_next() volatile
 {
 	OverlappedNtfsMftReadPayload const *const me = const_cast<OverlappedNtfsMftReadPayload const *>(this);
-	bool any = false;
 	bool handled = false;
 	if (!handled)
 	{
@@ -2280,20 +2584,7 @@ bool OverlappedNtfsMftReadPayload::queue_next() volatile
 			p->skipped_begin(skip_begin * me->cluster_size);
 			p->skipped_end(skip_end * me->cluster_size);
 			p->time(clock() - begin_time);
-			void *const buffer = p.get() + 1;
-			if (!cb || ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
-			{
-				if (PostQueuedCompletionStatus(me->iocp, cb, 0, p.get()))
-				{
-					any = true, p.detach();
-				}
-				else { CheckAndThrow(false); }
-			}
-			else if (GetLastError() == ERROR_IO_PENDING)
-			{
-				any = true, p.detach();
-			}
-			else { CheckAndThrow(false); }
+			me->iocp->read_file(me->p->volume(), p.get() + 1, cb, p);
 		}
 		else if (jbitmap > me->bitmap_ret_ptrs.size())
 		{
@@ -2319,20 +2610,7 @@ bool OverlappedNtfsMftReadPayload::queue_next() volatile
 			p->skipped_begin(skip_begin * me->cluster_size);
 			p->skipped_end(skip_end * me->cluster_size);
 			p->time(clock() - begin_time);
-			void *const buffer = p.get() + 1;
-			if (!cb || ReadFile(me->p->volume(), buffer, cb, NULL, p.get()))
-			{
-				if (PostQueuedCompletionStatus(me->iocp, cb, 0, p.get()))
-				{
-					any = true, p.detach();
-				}
-				else { CheckAndThrow(false); }
-			}
-			else if (GetLastError() == ERROR_IO_PENDING)
-			{
-				any = true, p.detach();
-			}
-			else { CheckAndThrow(false); }
+			me->iocp->read_file(me->p->volume(), p.get() + 1, cb, p);
 		}
 		else if (jdata > me->data_ret_ptrs.size())
 		{
@@ -2340,7 +2618,6 @@ bool OverlappedNtfsMftReadPayload::queue_next() volatile
 			this->jdata.fetch_sub(1, atomic_namespace::memory_order_acq_rel);
 		}
 	}
-	return any;
 }
 int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t const key)
 {
@@ -2360,7 +2637,7 @@ int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t co
 		this->cluster_size = static_cast<unsigned int>(info.BytesPerCluster);
 		p->mft_record_size = info.BytesPerFileRecordSegment;
 		p->mft_capacity = static_cast<unsigned int>(info.MftValidDataLength.QuadPart / info.BytesPerFileRecordSegment);
-		CheckAndThrow(!!CreateIoCompletionPort(volume, this->iocp, reinterpret_cast<uintptr_t>(&*p), 0));
+		this->iocp->associate(volume, reinterpret_cast<uintptr_t>(&*p));
 		typedef std::vector<std::pair<unsigned long long, long long> > RP;
 #if 1
 		{
@@ -2467,8 +2744,19 @@ public:
 	friend std::basic_ostream<TCHAR> &operator<<(std::basic_ostream<TCHAR> &ss, this_type &me);  // Do NOT implement this. Turns out DDK's implementation doesn't handle embedded null characters correctly. Just use a basic_string directly instead.
 };
 
+extern HMODULE mui_module;
+
 class StringLoader
 {
+	class SwapModuleResource
+	{
+		SwapModuleResource(SwapModuleResource const &);
+		SwapModuleResource &operator =(SwapModuleResource const &);
+		HINSTANCE prev;
+	public:
+		~SwapModuleResource() { InterlockedExchangePointer(reinterpret_cast<void **>(&_Module.m_hInstResource), prev); }
+		SwapModuleResource(HINSTANCE const instance) : prev() { InterlockedExchangePointer(reinterpret_cast<void **>(&_Module.m_hInstResource), mui_module); }
+	};
 	std::vector<RefCountedCString> strings;
 public:
 	RefCountedCString &operator()(unsigned short const id)
@@ -2479,7 +2767,12 @@ public:
 		}
 		if (this->strings[id].IsEmpty())
 		{
-			this->strings[id].LoadString(id);
+			RefCountedCString &str = this->strings[id];
+			bool success = mui_module && (SwapModuleResource(mui_module), !!str.LoadString(id));
+			if (!success)
+			{
+				str.LoadString(id);
+			}
 		}
 		return this->strings[id];
 	}
@@ -2500,67 +2793,42 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 #endif
 	};
 #endif
-
-	typedef basic_iterator_ios<std::back_insert_iterator<std::tstring>, std::tstring::traits_type> NFormat;
-	struct CThemedListViewCtrl : public WTL::CListViewCtrl, public WTL::CThemeImpl<CThemedListViewCtrl> { using WTL::CListViewCtrl::Attach; };
-	class Threads : public std::vector<uintptr_t>
+	template<class Container> struct NFormatBase { typedef basic_iterator_ios<std::back_insert_iterator<Container>, typename Container::traits_type> type; };
+	class NFormat : public NFormatBase<std::tstring>::type, public NFormatBase<std::tvstring>::type
 	{
-		Threads(Threads const &) { }
-		Threads &operator =(Threads const &) { return *this; }
+		typedef NFormat this_type;
 	public:
-		Threads() { }
-		~Threads()
-		{
-			while (!this->empty())
-			{
-				size_t n = std::min(this->size(), static_cast<size_t>(MAXIMUM_WAIT_OBJECTS));
-				WaitForMultipleObjects(static_cast<unsigned long>(n), reinterpret_cast<void *const *>(&*this->begin() + this->size() - n), TRUE, INFINITE);
-				while (n) { this->pop_back(); --n; }
-			}
-		}
-	};
-	static unsigned long get_num_threads()
-	{
-		unsigned long num_threads = 0;
-#ifdef _OPENMP
-#pragma omp parallel
-#pragma omp atomic
-		++num_threads;
-#else
-		TCHAR const *const omp_num_threads = _tgetenv(_T("OMP_NUM_THREADS"));
-		if (int const n = omp_num_threads ? _ttoi(omp_num_threads) : 0)
-		{
-			num_threads = static_cast<int>(n);
-		}
-		else
-		{
-			SYSTEM_INFO sysinfo;
-			GetSystemInfo(&sysinfo);
-			num_threads = sysinfo.dwNumberOfProcessors;
-		}
-#endif
-		return num_threads;
-	}
-	static unsigned int CALLBACK iocp_worker(void *iocp)
-	{
-		ULONG_PTR key;
-		OVERLAPPED *overlapped_ptr;
-		Overlapped *p;
-		for (unsigned long nr; GetQueuedCompletionStatus(iocp, &nr, &key, &overlapped_ptr, INFINITE);)
-		{
-			p = static_cast<Overlapped *>(overlapped_ptr);
-			boost::intrusive_ptr<Overlapped> overlapped(p, false);
-			if (overlapped.get())
-			{
-				int r = (*overlapped)(static_cast<size_t>(nr), key);
-				if (r > 0) { r = PostQueuedCompletionStatus(iocp, nr, key, overlapped_ptr) ? 0 : -1; }
-				if (r >= 0) { overlapped.detach(); }
-			}
-			else if (!key) { break; }
-		}
-		return 0;
-	}
+		explicit NFormat(std::locale const &loc) : NFormatBase<std::tstring>::type(loc), NFormatBase<std::tvstring>::type(loc) { }
 
+		template<class T>
+		struct lazy
+		{
+			this_type const *me;
+			T const *value;
+			explicit lazy(this_type const *const me, T const &value) : me(me), value(&value) { }
+			operator std::tstring() const
+			{
+				std::tstring result;
+				me->typename NFormatBase<std::tstring>::type::put(std::back_inserter(result), *value);
+				return result;
+			}
+			operator std::tvstring() const
+			{
+				std::tvstring result;
+				me->typename NFormatBase<std::tvstring>::type::put(std::back_inserter(result), *value);
+				return result;
+			}
+			template<class String>
+			friend String &operator+=(String &out, lazy const &this_)
+			{
+				this_.me->typename NFormatBase<String>::type::put(std::back_inserter(out), *this_.value);
+				return out;
+			}
+		};
+		template<class T>
+		lazy<T> operator()(T const &value) const { return lazy<T>(this, value); }
+	};
+	struct CThemedListViewCtrl : public WTL::CListViewCtrl, public WTL::CThemeImpl<CThemedListViewCtrl> { using WTL::CListViewCtrl::Attach; };
 	class CSearchPattern : public ATL::CWindowImpl<CSearchPattern, WTL::CEdit>
 	{
 		BEGIN_MSG_MAP_EX2(CCustomDialogCode)
@@ -2647,7 +2915,7 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 		bool valid;
 		int iIconSmall, iIconLarge, iIconExtraLarge;
 		TCHAR szTypeName[80];
-		std::tstring description;
+		std::tvstring description;
 	};
 	static unsigned int const WM_TASKBARCREATED;
 	enum { WM_NOTIFYICON = WM_USER + 100 };
@@ -2802,32 +3070,6 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 		}
 	};
 
-	class SetIoPriority
-	{
-		uintptr_t _volume;
-		winnt::FILE_IO_PRIORITY_HINT_INFORMATION _old;
-		SetIoPriority &operator =(SetIoPriority const &);
-	public:
-		static winnt::FILE_IO_PRIORITY_HINT_INFORMATION set(uintptr_t const volume, winnt::IO_PRIORITY_HINT const value)
-		{
-			winnt::FILE_IO_PRIORITY_HINT_INFORMATION old = {};
-			winnt::IO_STATUS_BLOCK iosb;
-			winnt::NtQueryInformationFile(reinterpret_cast<HANDLE>(volume), &iosb, &old, sizeof(old), 43);
-			if (value != winnt::MaxIoPriorityTypes)
-			{
-				winnt::FILE_IO_PRIORITY_HINT_INFORMATION io_priority = { value };
-				winnt::NtSetInformationFile(reinterpret_cast<HANDLE>(volume), &iosb, &io_priority, sizeof(io_priority), 43);
-			}
-			return old;
-		}
-		uintptr_t volume() const { return this->_volume; }
-		SetIoPriority() : _volume(), _old() { }
-		SetIoPriority(SetIoPriority const &other) : _volume(other._volume), _old() { this->_old.PriorityHint = winnt::MaxIoPriorityTypes; }
-		explicit SetIoPriority(uintptr_t const volume, winnt::IO_PRIORITY_HINT const priority) : _volume(volume), _old(set(volume, priority)) { }
-		~SetIoPriority() { if (this->_volume) { set(this->_volume, this->_old.PriorityHint); } }
-		void swap(SetIoPriority &other) { using std::swap; swap(this->_volume, other._volume); swap(this->_old, other._old); }
-	};
-
 	template<class StrCmp>
 	static NameComparator<StrCmp> name_comparator(StrCmp const &cmp) { return NameComparator<StrCmp>(cmp); }
 
@@ -2837,8 +3079,8 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	WTL::CRichEditCtrl richEdit;
 	WTL::CStatusBarCtrl statusbar;
 	WTL::CAccelerator accel;
-	std::map<std::tstring, CacheInfo> cache;
-	std::tstring lastRequestedIcon;
+	std::map<std::tvstring, CacheInfo> cache;
+	std::tvstring lastRequestedIcon;
 	HANDLE hRichEdit;
 	bool autocomplete_called;
 	std::pair<int /* column */, unsigned int /* counter */> last_sort;
@@ -2851,8 +3093,8 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	WTL::CMenu menu;
 	boost::intrusive_ptr<BackgroundWorker> iconLoader;
 	Handle closing_event;
-	Handle iocp;
-	Threads threads;
+	boost::intrusive_ptr<IoCompletionPort> iocp;
+	bool initialized;
 	NFormat nformat_ui, nformat_io;
 	long long time_zone_bias;
 	LCID lcid;
@@ -2883,10 +3125,11 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 		return SHOpenFolderAndSelectItems(p->first.first, static_cast<UINT>(relative_item_ids.size()), relative_item_ids.empty() ? NULL : &relative_item_ids[0], 0);
 	}
 public:
-	CMainDlg(HANDLE const hEvent) :
-		num_threads(static_cast<size_t>(get_num_threads())), indices_created(),
-		closing_event(CreateEvent(NULL, TRUE, FALSE, NULL)), iocp(CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0)),
-		threads(), nformat_ui(std::locale("")), nformat_io(std::locale()), time_zone_bias(), lcid(GetThreadLocale()), hWait(), hEvent(hEvent),
+	CMainDlg(HANDLE const hEvent, bool const rtl) :
+		CModifiedDialogImpl<CMainDlg>(true, rtl),
+		indices_created(),
+		closing_event(CreateEvent(NULL, TRUE, FALSE, NULL)), iocp(new IoCompletionPort()), initialized(),
+		nformat_ui(std::locale("")), nformat_io(std::locale()), time_zone_bias(), lcid(GetThreadLocale()), hWait(), hEvent(hEvent),
 		iconLoader(BackgroundWorker::create(true)), lastRequestedIcon(), hRichEdit(), autocomplete_called(false), _small_image_list(),
 		deletedColor(RGB(0xFF, 0, 0)), encryptedColor(RGB(0, 0xFF, 0)), compressedColor(RGB(0, 0, 0xFF)), suppress_escapes(0)
 	{
@@ -2896,32 +3139,42 @@ public:
 		this->time_zone_bias = info.TimeZoneBias.QuadPart;
 	}
 
-	void SystemTimeToString(long long system_time /* UTC */, std::tstring &buffer, bool const sortable) const
+	void SystemTimeToString(long long system_time /* UTC */, std::tvstring &buffer, bool const sortable) const
 	{
 		long long local_time = system_time - this->time_zone_bias;
-		winnt::TIME_FIELDS time_fields;
-		winnt::RtlTimeToTimeFields(&reinterpret_cast<LARGE_INTEGER &>(local_time), &time_fields);
+		winnt::TIME_FIELDS tf;
+		winnt::RtlTimeToTimeFields(&reinterpret_cast<LARGE_INTEGER &>(local_time), &tf);
 		if (sortable)
 		{
-			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Year  ), 4); buffer += _T('-');
-			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Month ), 2); buffer += _T('-');
-			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Day   ), 2); buffer += _T(' ');
-			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Hour  ), 2); buffer += _T(':');
-			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Minute), 2); buffer += _T(':');
-			NumberFormatter::format_fast_ascii_append(buffer, static_cast<unsigned long long>(time_fields.Second), 2);
+			TCHAR buf[64], *p = buf;
+			size_t cch_zero  ; basic_conv<TCHAR>::to_string(0        , p, 10); cch_zero   = std::char_traits<TCHAR>::length(p); p += static_cast<ptrdiff_t>(cch_zero  );
+			size_t cch_year  ; basic_conv<TCHAR>::to_string(tf.Year  , p, 10); cch_year   = std::char_traits<TCHAR>::length(p); p += static_cast<ptrdiff_t>(cch_year  );
+			size_t cch_month ; basic_conv<TCHAR>::to_string(tf.Month , p, 10); cch_month  = std::char_traits<TCHAR>::length(p); p += static_cast<ptrdiff_t>(cch_month );
+			size_t cch_day   ; basic_conv<TCHAR>::to_string(tf.Day   , p, 10); cch_day    = std::char_traits<TCHAR>::length(p); p += static_cast<ptrdiff_t>(cch_day   );
+			size_t cch_hour  ; basic_conv<TCHAR>::to_string(tf.Hour  , p, 10); cch_hour   = std::char_traits<TCHAR>::length(p); p += static_cast<ptrdiff_t>(cch_hour  );
+			size_t cch_minute; basic_conv<TCHAR>::to_string(tf.Minute, p, 10); cch_minute = std::char_traits<TCHAR>::length(p); p += static_cast<ptrdiff_t>(cch_minute);
+			size_t cch_second; basic_conv<TCHAR>::to_string(tf.Second, p, 10); cch_second = std::char_traits<TCHAR>::length(p); p += static_cast<ptrdiff_t>(cch_second);
+			TCHAR zero = buf[0];
+			size_t i = cch_zero;
+			{ size_t const cch = cch_year  ; buffer.append(4 - cch, zero); buffer.append(&buf[i], cch); i += cch; } buffer.push_back(_T('-'));
+			{ size_t const cch = cch_month ; buffer.append(2 - cch, zero); buffer.append(&buf[i], cch); i += cch; } buffer.push_back(_T('-'));
+			{ size_t const cch = cch_day   ; buffer.append(2 - cch, zero); buffer.append(&buf[i], cch); i += cch; } buffer.push_back(_T(' '));
+			{ size_t const cch = cch_hour  ; buffer.append(2 - cch, zero); buffer.append(&buf[i], cch); i += cch; } buffer.push_back(_T(':'));
+			{ size_t const cch = cch_minute; buffer.append(2 - cch, zero); buffer.append(&buf[i], cch); i += cch; } buffer.push_back(_T(':'));
+			{ size_t const cch = cch_second; buffer.append(2 - cch, zero); buffer.append(&buf[i], cch); i += cch; }
 		}
 		else
 		{
 			SYSTEMTIME sysTime =
 			{
-				static_cast<WORD>(time_fields.Year),
-				static_cast<WORD>(time_fields.Month),
-				static_cast<WORD>(time_fields.Weekday),
-				static_cast<WORD>(time_fields.Day),
-				static_cast<WORD>(time_fields.Hour),
-				static_cast<WORD>(time_fields.Minute),
-				static_cast<WORD>(time_fields.Second),
-				static_cast<WORD>(time_fields.Milliseconds)
+				static_cast<WORD>(tf.Year),
+				static_cast<WORD>(tf.Month),
+				static_cast<WORD>(tf.Weekday),
+				static_cast<WORD>(tf.Day),
+				static_cast<WORD>(tf.Hour),
+				static_cast<WORD>(tf.Minute),
+				static_cast<WORD>(tf.Second),
+				static_cast<WORD>(tf.Milliseconds)
 			};
 			buffer.resize(64);
 			size_t cch = 0;
@@ -2943,16 +3196,14 @@ public:
 		UnregisterWait(this->hWait);
 		this->DeleteNotifyIcon();
 		this->iconLoader->clear();
-		for (size_t i = 0; i != this->threads.size(); ++i)
-		{
-			PostQueuedCompletionStatus(this->iocp, 0, 0, NULL);
-		}
+		this->iocp->close();
+		this->iocp.reset();
 	}
 
 	struct IconLoaderCallback
 	{
 		CMainDlg *this_;
-		std::tstring path;
+		std::tvstring path;
 		SIZE iconSmallSize, iconLargeSize;
 		unsigned long fileAttributes;
 		int iItem;
@@ -2960,7 +3211,7 @@ public:
 		struct MainThreadCallback
 		{
 			CMainDlg *this_;
-			std::tstring description, path;
+			std::tvstring description, path;
 			WTL::CIcon iconSmall, iconLarge;
 			int iItem;
 			TCHAR szTypeName[80];
@@ -2994,9 +3245,9 @@ public:
 			this_->lvFiles.GetItemRect(iItem, &rcItem, LVIR_BOUNDS);  // Blocks, but I'm hoping it's fast...
 			if (IntersectRect(&intersection, &rcFiles, &rcItem))
 			{
-				std::tstring const normalizedPath = NormalizePath(path);
+				std::tvstring normalizedPath = NormalizePath(path);
 				SHFILEINFO shfi = {0};
-				std::tstring description;
+				std::tvstring description;
 #if 0
 				{
 					std::vector<BYTE> buffer;
@@ -3007,13 +3258,13 @@ public:
 						LPVOID p;
 						UINT uLen;
 						if (VerQueryValue(buffer.empty() ? NULL : &buffer[0], _T("\\StringFileInfo\\040904E4\\FileDescription"), &p, &uLen))
-						{ description = std::tstring((LPCTSTR)p, uLen); }
+						{ description = std::tvstring((LPCTSTR)p, uLen); }
 					}
 				}
 #endif
 				Handle fileTemp;  // To prevent icon retrieval from changing the file time
 				{
-					std::tstring ntpath = _T("\\??\\") + path;
+					std::tvstring ntpath = _T("\\??\\") + path;
 					winnt::UNICODE_STRING us = { static_cast<unsigned short>(ntpath.size() * sizeof(*ntpath.begin())), static_cast<unsigned short>(ntpath.size() * sizeof(*ntpath.begin())), ntpath.empty() ? NULL : &*ntpath.begin() };
 					winnt::OBJECT_ATTRIBUTES oa = { sizeof(oa), NULL, &us };
 					winnt::IO_STATUS_BLOCK iosb;
@@ -3040,9 +3291,9 @@ public:
 
 				if (success)
 				{
-					std::tstring const path(path);
+					std::tvstring const path_copy(path);
 					int const iItem(iItem);
-					MainThreadCallback callback = { this_, description, path, iconSmall.Detach(), iconLarge.Detach(), iItem };
+					MainThreadCallback callback = { this_, description, path_copy, iconSmall.Detach(), iconLarge.Detach(), iItem };
 					_tcscpy(callback.szTypeName, shfi.szTypeName);
 					this_->InvokeAsync(callback);
 					callback.iconLarge.Detach();
@@ -3057,15 +3308,22 @@ public:
 		}
 	};
 
-	static void remove_path_stream_and_trailing_sep(std::tstring &path)
+	static void remove_path_stream_and_trailing_sep(std::tvstring &path)
 	{
 		for (;;)
 		{
-			size_t colon_or_sep = path.find_last_of(_T("\\:"));
+			size_t colon_or_sep;
+			for (colon_or_sep = path.size(); colon_or_sep != 0 && ((void)--colon_or_sep, true); )
+			{
+				if (!isdirsep(path[colon_or_sep]) && path[colon_or_sep] != _T(':'))
+				{
+					break;
+				}
+			}
 			if (!~colon_or_sep || path[colon_or_sep] != _T(':')) { break; }
 			path.erase(colon_or_sep, path.size() - colon_or_sep);
 		}
-		while (!path.empty() && isdirsep(*(path.end() - 1)) && path.find_first_of(_T('\\')) != path.size() - 1)
+		while (!path.empty() && isdirsep(*(path.end() - 1)) && path.find(_T('\\')) != path.size() - 1)
 		{
 			path.erase(path.end() - 1);
 		}
@@ -3075,7 +3333,7 @@ public:
 		}
 	}
 
-	int CacheIcon(std::tstring path, int const iItem, ULONG fileAttributes, bool lifo)
+	int CacheIcon(std::tvstring path, int const iItem, ULONG fileAttributes, bool lifo)
 	{
 		remove_path_stream_and_trailing_sep(path);
 		std::reverse(path.begin(), path.end());
@@ -3186,30 +3444,19 @@ public:
 		}
 		this->SendMessage(WM_COMMAND, ID_VIEW_FITCOLUMNSTOWINDOW);
 
-		this->statusbar = CreateStatusWindow(WS_CHILD | SBT_TOOLTIPS, NULL, *this, IDC_STATUS_BAR);
+		this->statusbar = CreateStatusWindow(WS_CHILD | SBT_TOOLTIPS | WS_VISIBLE, NULL, *this, IDC_STATUS_BAR);
 		int const rcStatusPaneWidths[] = { 360, -1 };
-		if ((this->statusbar.GetStyle() & WS_VISIBLE) != 0)
-		{
-			RECT rect; this->lvFiles.GetWindowRect(&rect);
-			this->ScreenToClient(&rect);
-			{
-				RECT sbRect; this->statusbar.GetWindowRect(&sbRect);
-				rect.bottom -= (sbRect.bottom - sbRect.top);
-			}
-			this->lvFiles.MoveWindow(&rect);
-		}
 		this->statusbar.SetParts(sizeof(rcStatusPaneWidths) / sizeof(*rcStatusPaneWidths), const_cast<int *>(rcStatusPaneWidths));
 		this->statusbar.SetText(0, this->LoadString(IDS_STATUS_DEFAULT));
 		WTL::CRect rcStatusPane1; this->statusbar.GetRect(1, &rcStatusPane1);
 		//this->statusbarProgress.Create(this->statusbar, rcStatusPane1, NULL, WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0);
 		//this->statusbarProgress.SetRange(0, INT_MAX);
 		//this->statusbarProgress.SetPos(INT_MAX / 2);
-		this->statusbar.ShowWindow(SW_SHOW);
 		WTL::CRect clientRect;
-		if (this->lvFiles.GetWindowRect(&clientRect))
+		if (this->lvFiles.GetClientRect(&clientRect))
 		{
-			this->ScreenToClient(&clientRect);
-			this->lvFiles.SetWindowPos(NULL, 0, 0, clientRect.Width(), clientRect.Height() - rcStatusPane1.Height(), SWP_NOMOVE | SWP_NOZORDER);
+			clientRect.bottom -= rcStatusPane1.Height();
+			this->lvFiles.ResizeClient(clientRect.Width(), clientRect.Height(), FALSE);
 		}
 
 		this->DlgResize_Init(false, false);
@@ -3264,7 +3511,8 @@ public:
 				std::vector<lock_guard<mutex> > indices_locks(indices.size());
 				for (size_t i = 0; i != indices.size(); ++i)
 				{ lock_guard<mutex>(indices[i]->get_mutex()).swap(indices_locks[i]); }
-				std::vector<std::pair<std::tstring, std::tstring> > vnames(
+				typedef std::vector<std::pair<std::tvstring, std::tvstring> > VNames;
+				VNames vnames(
 #ifdef _OPENMP
 					omp_get_max_threads()
 #else
@@ -3276,7 +3524,7 @@ public:
 				std::stable_sort(this->results.rbegin(), this->results.rend(), [this, subitem, &vnames, &tprev, reversed, shift_pressed, alt_pressed, ctrl_pressed](Results::value_type const &_a, Results::value_type const &_b)
 				{
 					Results::value_type const &a = reversed ? _a : _b, &b = reversed ? _b : _a;
-					std::pair<std::tstring, std::tstring> &names = *(vnames.begin()
+					VNames::value_type &names = *(vnames.begin()
 #ifdef _OPENMP
 						+ omp_get_thread_num()
 #endif
@@ -3395,8 +3643,8 @@ public:
 			}
 		}
 		this->clear();
-		WTL::CWaitCursor wait;
-		CProgressDialog dlg(*this);
+		WTL::CWaitCursor const wait_cursor;
+		CProgressDialog dlg(*this, !!(this->GetExStyle() & WS_EX_LAYOUTRTL));
 		dlg.SetProgressTitle(this->LoadString(IDS_SEARCHING_TITLE));
 		if (dlg.HasUserCancelled()) { return; }
 		std::tstring pattern;
@@ -3419,7 +3667,7 @@ public:
 		bool const requires_root_path_match = is_path_pattern && !pattern.empty() && (is_regex
 			? *pattern.begin() != _T('.') && *pattern.begin() != _T('(') && *pattern.begin() != _T('[') && *pattern.begin() != _T('.')
 			: *pattern.begin() != _T('*') && *pattern.begin() != _T('?'));
-		typedef std::tstring::const_iterator It;
+		typedef std::tvstring::const_iterator It;
 #ifdef BOOST_XPRESSIVE_DYNAMIC_HPP_EAN
 		typedef boost::xpressive::basic_regex<It> RE;
 		boost::xpressive::match_results<RE::iterator_type> mr;
@@ -3436,25 +3684,33 @@ public:
 		if (!is_path_pattern && !~pattern.find(_T('*')) && !~pattern.find(_T('?'))) { pattern.insert(pattern.begin(), _T('*')); pattern.insert(pattern.end(), _T('*')); }
 		clock_t const start = clock();
 		std::vector<uintptr_t> wait_handles;
-		std::vector<Results::value_type::first_type> wait_indices, initial_wait_indices;
+		std::vector<Results::value_type::first_type> nonwait_indices, wait_indices, initial_wait_indices;
 		// TODO: What if they exceed maximum wait objects?
 		bool any_io_pending = false;
 		size_t expected_results = 0;
 		size_t overall_progress_numerator = 0, overall_progress_denominator = 0;
 		for (int ii = 0; ii < this->cmbDrive.GetCount(); ++ii)
 		{
-			boost::intrusive_ptr<NtfsIndex> const p = static_cast<NtfsIndex *>(this->cmbDrive.GetItemDataPtr(ii));
-			if (p && (selected == ii || selected == 0))
+			if (boost::intrusive_ptr<NtfsIndex> const p = static_cast<NtfsIndex *>(this->cmbDrive.GetItemDataPtr(ii)))
 			{
-				std::tstring const root_path = p->root_path();
-				if (!requires_root_path_match || pattern.size() >= root_path.size() && std::equal(root_path.begin(), root_path.end(), pattern.begin()))
+				bool wait = false;
+				if (selected == ii || selected == 0)
 				{
-					wait_handles.push_back(p->finished_event());
-					wait_indices.push_back(p.get());
-					expected_results += p->expected_records();
-					size_t const records_so_far = p->records_so_far();
-					any_io_pending |= records_so_far < p->mft_capacity;
-					overall_progress_denominator += p->mft_capacity * 2;
+					std::tvstring const root_path = p->root_path();
+					if (!requires_root_path_match || pattern.size() >= root_path.size() && std::equal(root_path.begin(), root_path.end(), pattern.begin()))
+					{
+						wait = true;
+						wait_handles.push_back(p->finished_event());
+						wait_indices.push_back(p.get());
+						expected_results += p->expected_records();
+						size_t const records_so_far = p->records_so_far();
+						any_io_pending |= records_so_far < p->mft_capacity;
+						overall_progress_denominator += p->mft_capacity * 2;
+					}
+				}
+				if (!wait)
+				{
+					nonwait_indices.push_back(p.get());
 				}
 			}
 		}
@@ -3463,12 +3719,16 @@ public:
 		if (any_io_pending) { dlg.ForceShow(); }
 		try { this->results.reserve(this->results.size() + expected_results + expected_results / 8); }
 		catch (std::bad_alloc &) { }
-		std::vector<SetIoPriority> set_priorities(wait_indices.size());
+		std::vector<IoPriority> set_priorities(nonwait_indices.size() + wait_indices.size());
+		for (size_t i = 0; i != nonwait_indices.size(); ++i)
+		{
+			IoPriority(reinterpret_cast<uintptr_t>(nonwait_indices[i]->volume()), winnt::IoPriorityLow).swap(set_priorities.at(i));
+		}
 		for (size_t i = 0; i != wait_indices.size(); ++i)
 		{
-			// SetIoPriority(reinterpret_cast<uintptr_t>(wait_indices[i]->volume()), winnt::IoPriorityLow).swap(set_priorities[i]);
+			IoPriority(reinterpret_cast<uintptr_t>(wait_indices[i]->volume()), winnt::IoPriorityLow).swap(set_priorities.at(nonwait_indices.size() + i));
 		}
-		SetIoPriority set_priority;
+		IoPriority set_priority;
 		Speed::second_type initial_time = Speed::second_type();
 		Speed::first_type initial_average_amount = Speed::first_type();
 		while (!dlg.HasUserCancelled() && !wait_handles.empty())
@@ -3476,7 +3736,9 @@ public:
 			if (uintptr_t const volume = reinterpret_cast<uintptr_t>(wait_indices.at(0)->volume()))
 			{
 				if (set_priority.volume() != volume)
-				{ SetIoPriority(volume, winnt::IoPriorityHigh).swap(set_priority); }
+				{
+					IoPriority(volume, winnt::IoPriorityNormal).swap(set_priority);
+				}
 			}
 			unsigned long const wait_result = dlg.WaitMessageLoop(wait_handles.empty() ? NULL : &*wait_handles.begin(), wait_handles.size());
 			if (wait_result == WAIT_TIMEOUT)
@@ -3549,8 +3811,8 @@ public:
 					Results::value_type::first_type const i = wait_indices[wait_result];
 					size_t current_progress_numerator = 0;
 					size_t const current_progress_denominator = lock(i)->total_names_and_streams();
-					std::tstring const root_path = lock(i)->root_path();
-					std::tstring current_path = root_path;
+					std::tvstring root_path = lock(i)->root_path();
+					std::tvstring current_path = root_path;
 					while (!current_path.empty() && *(current_path.end() - 1) == _T('\\')) { current_path.erase(current_path.end() - 1); }
 					try
 					{
@@ -3739,6 +4001,7 @@ public:
 				return result;
 			}
 		} NtUserProp_hook;
+		result.reserve(result.size() + static_cast<size_t>(this->lvFiles.GetSelectedCount()));
 		WNDPROC const lvFiles_wndproc = reinterpret_cast<WNDPROC>(::GetWindowLongPtr(this->lvFiles.m_hWnd, GWLP_WNDPROC));
 		for (int i = -1;;)
 		{
@@ -3766,16 +4029,16 @@ public:
 				{
 					RECT bounds = {};
 					this->lvFiles.GetItemRect(index, &bounds, LVIR_SELECTBOUNDS);
-					this->lvFiles.ClientToScreen(&bounds);
 					point.x = bounds.left;
 					point.y = bounds.top;
+					this->lvFiles.MapWindowPoints(NULL, &point, 1);
 					indices.push_back(static_cast<size_t>(index));
 				}
 			}
 			else
 			{
 				POINT clientPoint = point;
-				this->lvFiles.ScreenToClient(&clientPoint);
+				::MapWindowPoints(NULL, this->lvFiles, &clientPoint, 1);
 				index = this->lvFiles.HitTest(clientPoint, 0);
 				if (index >= 0)
 				{
@@ -3830,8 +4093,8 @@ public:
 		if (results.size() <= (1 << 10))  // if not too many files... otherwise the shell context menu this will take a long time
 		{
 			SFGAOF sfgao = 0;
-			std::tstring common_ancestor_path;
-			std::tstring path;
+			std::tvstring common_ancestor_path;
+			std::tvstring path;
 			for (size_t i = 0; i < results.size(); ++i)
 			{
 				Results::value_type const &row = *results[i];
@@ -3954,7 +4217,7 @@ public:
 		}
 		else if (id == dumpId)
 		{
-			std::basic_string<TCHAR> file_dialog_save_options;
+			std::tstring file_dialog_save_options;
 			{
 				std::tstring const null_char(1, _T('\0'));  // Do NOT convert this to TCHAR because 'wchar_t' might get interpreted as 'unsigned short' depending on compiler flags
 				file_dialog_save_options += this->LoadString(IDS_SAVE_OPTION_UTF8_CSV);
@@ -3982,11 +4245,11 @@ public:
 				File const output = { _topen(fdlg.m_ofn.lpstrFile, _O_BINARY | _O_TRUNC | _O_CREAT | _O_RDWR | _O_SEQUENTIAL, _S_IREAD | _S_IWRITE) };
 				if (output != NULL)
 				{
-					CProgressDialog dlg(*this);
+					CProgressDialog dlg(*this, !!(this->GetExStyle() & WS_EX_LAYOUTRTL));
 					dlg.SetProgressTitle(this->LoadString(IDS_DUMPING_TITLE));
 					if (dlg.HasUserCancelled()) { return; }
 					std::string line_buffer_utf8;
-					std::tstring line_buffer, text_buffer;
+					std::tvstring line_buffer, text_buffer;
 					size_t const buffer_size = 1 << 20;
 					line_buffer.reserve(buffer_size);  // this is necessary since MSVC STL reallocates poorly, degenerating into O(n^2)
 					unsigned long long nwritten_since_update = 0;
@@ -4029,15 +4292,15 @@ public:
 									dlg.Flush();
 								}
 							}
-							if (any) { line_buffer += tabsep ? _T('\t') : _T(','); }
+							if (any) { line_buffer.push_back(tabsep ? _T('\t') : _T(',')); }
 							// NOTE: We assume there are no double-quotes here, so we don't handle escaping for that! This is a valid assumption for this program.
 							if (tabsep)
 							{
 								bool may_contain_tabs = false;
 								if (may_contain_tabs && text_buffer.find(_T('\t')) != std::tstring::npos)
 								{
-									text_buffer.insert(text_buffer.begin(), 1, _T('\"'));
-									text_buffer.insert(text_buffer.end(), 1, _T('\"'));
+									text_buffer.insert(text_buffer.begin(), _T('\"'));
+									text_buffer.push_back(_T('\"'));
 								}
 							}
 							else
@@ -4045,15 +4308,15 @@ public:
 								if (text_buffer.find(_T(',')) != std::tstring::npos ||
 									text_buffer.find(_T('\'')) != std::tstring::npos)
 								{
-									text_buffer.insert(text_buffer.begin(), 1, _T('\"'));
-									text_buffer.insert(text_buffer.end(), 1, _T('\"'));
+									text_buffer.insert(text_buffer.begin(), _T('\"'));
+									text_buffer.push_back(_T('\"'));
 								}
 							}
 							line_buffer += text_buffer;
 							any = true;
 						}
-						line_buffer += _T('\r');
-						line_buffer += _T('\n');
+						line_buffer.push_back(_T('\r'));
+						line_buffer.push_back(_T('\n'));
 						should_flush |= line_buffer.size() >= buffer_size;
 						if (should_flush)
 						{
@@ -4092,7 +4355,7 @@ public:
 	{
 		Results::value_type const &result = this->results[static_cast<size_t>(index)];
 		Results::value_type::first_type const &i = result.index;
-		std::tstring path;
+		std::tvstring path;
 		path = lock(i)->root_path(), lock(i)->get_path(result.key, path, false);
 		remove_path_stream_and_trailing_sep(path);
 		std::auto_ptr<std::pair<std::pair<CShellItemIDList, ATL::CComPtr<IShellFolder> >, std::vector<CShellItemIDList> > > p(
@@ -4175,8 +4438,9 @@ public:
 		return 0;
 	}
 
-	void GetSubItemText(Results::value_type const &result, int const subitem, bool const for_ui, std::tstring &text, bool const lock_index = true) const
+	void GetSubItemText(Results::value_type const &result, int const subitem, bool const for_ui, std::tvstring &text, bool const lock_index = true) const
 	{
+		typedef std::tvstring::iterator TextIt;
 		lock_ptr<NtfsIndex const> i(result.index, lock_index);
 		Results::value_type::second_type const key = result.key;
 		text.erase(text.begin(), text.end());
@@ -4186,13 +4450,13 @@ public:
 		switch (subitem)
 		{
 		case COLUMN_INDEX_NAME             : i->get_path(key, text, true); deldirsep(text); break;
-		case COLUMN_INDEX_PATH             : text.append(i->root_path()); i->get_path(key, text, false); break;
-		case COLUMN_INDEX_SIZE             : uvalue = static_cast<unsigned long long>(i->get_sizes(key).length   ); text.append(nformat(uvalue)); break;
-		case COLUMN_INDEX_SIZE_ON_DISK     : uvalue = static_cast<unsigned long long>(i->get_sizes(key).allocated); text.append(nformat(uvalue)); break;
-		case COLUMN_INDEX_CREATION_TIME    : svalue = i->get_stdinfo(key.frs).created ; SystemTimeToString(svalue, text, !for_ui); { std::tstring::iterator end = text.end(); text.erase(std::find(text.begin(), end, _T('\0')), end); } break;
-		case COLUMN_INDEX_MODIFICATION_TIME: svalue = i->get_stdinfo(key.frs).written ; SystemTimeToString(svalue, text, !for_ui); { std::tstring::iterator end = text.end(); text.erase(std::find(text.begin(), end, _T('\0')), end); } break;
-		case COLUMN_INDEX_ACCESS_TIME      : svalue = i->get_stdinfo(key.frs).accessed; SystemTimeToString(svalue, text, !for_ui); { std::tstring::iterator end = text.end(); text.erase(std::find(text.begin(), end, _T('\0')), end); } break;
-		case COLUMN_INDEX_DESCENDENTS      : uvalue = static_cast<unsigned long long>(i->get_sizes(key).descendents); if (uvalue) { text.append(nformat(uvalue)); } break;
+		case COLUMN_INDEX_PATH             : text += i->root_path(); i->get_path(key, text, false); break;
+		case COLUMN_INDEX_SIZE             : uvalue = static_cast<unsigned long long>(i->get_sizes(key).length   ); text += nformat(uvalue); break;
+		case COLUMN_INDEX_SIZE_ON_DISK     : uvalue = static_cast<unsigned long long>(i->get_sizes(key).allocated); text += nformat(uvalue); break;
+		case COLUMN_INDEX_CREATION_TIME    : svalue = i->get_stdinfo(key.frs).created ; SystemTimeToString(svalue, text, !for_ui); { TextIt end = text.end(); text.erase(std::find(text.begin(), end, _T('\0')), end); } break;
+		case COLUMN_INDEX_MODIFICATION_TIME: svalue = i->get_stdinfo(key.frs).written ; SystemTimeToString(svalue, text, !for_ui); { TextIt end = text.end(); text.erase(std::find(text.begin(), end, _T('\0')), end); } break;
+		case COLUMN_INDEX_ACCESS_TIME      : svalue = i->get_stdinfo(key.frs).accessed; SystemTimeToString(svalue, text, !for_ui); { TextIt end = text.end(); text.erase(std::find(text.begin(), end, _T('\0')), end); } break;
+		case COLUMN_INDEX_DESCENDENTS      : uvalue = static_cast<unsigned long long>(i->get_sizes(key).descendents); if (uvalue) { text += nformat(uvalue); } break;
 		default: break;
 		}
 	}
@@ -4214,7 +4478,7 @@ public:
 			}
 			std::vector<lock_guard<mutex> > indices_locks;
 			indices_locks.reserve(static_cast<size_t>(this->cmbDrive.GetCount()));  // ensure we don't copy lock_guard's
-			std::tstring text;
+			std::tvstring text;
 			for (int i = 0; i < n; ++i)
 			{
 				int const iItem = (pLV->lvfi.lParam + (needle_length > 1 ? 0 : 1) + i) % n;
@@ -4264,7 +4528,7 @@ public:
 		{
 			Results::value_type const &result = this->results[static_cast<size_t>(pLV->item.iItem)];
 			Results::value_type::first_type const &i = result.index;
-			std::tstring text, path;
+			std::tvstring text, path;
 			this->GetSubItemText(result, pLV->item.iSubItem, true, text);
 			this->GetSubItemText(result, COLUMN_INDEX_PATH, true, path);
 			if (!text.empty()) { _tcsncpy(pLV->item.pszText, text.c_str(), pLV->item.cchTextMax); }
@@ -4348,7 +4612,7 @@ public:
 				result = CDRF_SKIPDEFAULT;
 				{
 					Results::value_type const &row = this->results[static_cast<size_t>(pLV->nmcd.dwItemSpec)];
-					std::tstring itemText;
+					std::tvstring itemText;
 					this->GetSubItemText(row, pLV->iSubItem, true, itemText);
 					WTL::CDCHandle dc(pLV->nmcd.hdc);
 					RECT rcTwips = pLV->nmcd.rc;
@@ -4359,7 +4623,18 @@ public:
 					int const savedDC = dc.SaveDC();
 					{
 						std::replace(itemText.begin(), itemText.end(), _T(' '), _T('\u00A0'));
-						replace_all(itemText, _T("\\"), _T("\\\u200B"));
+						{
+							size_t const prev_size = itemText.size();
+							for (size_t j = 0; j != prev_size; ++j)
+							{
+								itemText.push_back(itemText[j]);
+								if (itemText[j] == _T('\\'))
+								{
+									itemText.push_back(_T('\u200B'));
+								}
+							}
+							itemText.erase(itemText.begin(), itemText.begin() + static_cast<ptrdiff_t>(prev_size));
+						}
 						if (!this->richEdit)
 						{
 							this->hRichEdit = LoadLibrary(_T("riched20.dll"));
@@ -4395,16 +4670,6 @@ public:
 						}
 						this->richEdit.SetSel(0, -1);
 						this->richEdit.SetSelectionCharFormat(format);
-						if (false)
-						{
-							size_t last_sep = itemText.find_last_of(_T('\\'));
-							if (~last_sep)
-							{
-								this->richEdit.SetSel(static_cast<long>(last_sep + 1), this->richEdit.GetTextLength());
-								CHARFORMAT bold = { sizeof(bold), CFM_BOLD, CFE_BOLD, 0, 0, 0 };
-								this->richEdit.SetSelectionCharFormat(bold);
-							}
-						}
 						FORMATRANGE formatRange = { dc, dc, rcTwips, rcTwips, { 0, -1 } };
 						this->richEdit.FormatRange(formatRange, FALSE);
 						LONG height = formatRange.rc.bottom - formatRange.rc.top;
@@ -4479,14 +4744,10 @@ public:
 			SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
 			this->DeleteNotifyIcon();
 			this->UpdateWindow();
-			if (this->threads.empty())  // first-time initialization?
+			if (!this->initialized)
 			{
+				this->initialized = true;
 				this->Refresh(true);
-				for (size_t i = 0; i != this->num_threads; ++i)
-				{
-					unsigned int id;
-					this->threads.push_back(_beginthreadex(NULL, 0, iocp_worker, this->iocp, 0, &id));
-				}
 				RegisterWaitForSingleObject(&this->hWait, hEvent, &WaitCallback, this->m_hWnd, INFINITE, WT_EXECUTEINUITHREAD);
 			}
 		}
@@ -4595,7 +4856,7 @@ public:
 				boost::intrusive_ptr<NtfsIndex> q = static_cast<NtfsIndex *>(this->cmbDrive.GetItemDataPtr(ii));
 				if (q || initial && ii != 0)
 				{
-					std::tstring path_name;
+					std::tvstring path_name;
 					if (initial)
 					{
 						WTL::CString path_name_;
@@ -4615,14 +4876,11 @@ public:
 					q.reset(new NtfsIndex(path_name), true);
 					typedef OverlappedNtfsMftReadPayload T;
 					boost::intrusive_ptr<T> p(new T(this->iocp, q, this->m_hWnd, this->closing_event));
-					if (PostQueuedCompletionStatus(this->iocp, 0, static_cast<uintptr_t>(ii), &*p))
+					this->iocp->post(0, static_cast<uintptr_t>(ii), p);
+					if (this->cmbDrive.SetItemDataPtr(ii, q.get()) != CB_ERR)
 					{
-						if (this->cmbDrive.SetItemDataPtr(ii, q.get()) != CB_ERR)
-						{
-							q.detach();
-							++this->indices_created;
-						}
-						p.detach();
+						q.detach();
+						++this->indices_created;
 					}
 				}
 			}
@@ -4671,6 +4929,62 @@ public:
 };
 unsigned int const CMainDlg::WM_TASKBARCREATED = RegisterWindowMessage(_T("TaskbarCreated"));
 
+int LCIDToLocaleName_XPCompatible(LCID lcid, LPTSTR name, int name_length)
+{
+	HMODULE hKernel32;
+	if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCTSTR>(&GetSystemInfo), &hKernel32))
+	{
+		hKernel32 = NULL;
+	}
+	typedef int WINAPI LCIDToLocaleName_t(LCID Locale, LPTSTR lpName, int cchName, DWORD dwFlags);
+	if (LCIDToLocaleName_t *const LCIDToLocaleName = reinterpret_cast<LCIDToLocaleName_t *>(GetProcAddress(hKernel32, _CRT_STRINGIZE(LCIDToLocaleName))))
+	{
+		name_length = (*LCIDToLocaleName)(lcid, name, name_length, 0);
+	}
+	else
+	{
+		ATL::CRegKey key;
+		if (key.Open(HKEY_CLASSES_ROOT, TEXT("MIME\\Database\\Rfc1766"), KEY_QUERY_VALUE) == 0)
+		{
+			TCHAR value_data[64 + MAX_PATH];
+			TCHAR value_name[16];
+			value_name[0] = _T('\0');
+			_stprintf(value_name, _T("%04lX"), lcid);
+			unsigned long value_data_length = sizeof(value_data) / sizeof(*value_data);
+			LRESULT const result = key.QueryValue(value_name, value_data, &value_data_length);
+			if (result == 0)
+			{
+				unsigned long i;
+				for (i = 0; i != value_data_length; ++i)
+				{
+					if (value_data[i] == _T(';'))
+					{
+						break;
+					}
+					if (name_length >= 0 && i < static_cast<unsigned long>(name_length))
+					{
+						TCHAR ch = value_data[static_cast<ptrdiff_t>(i)];
+						name[static_cast<ptrdiff_t>(i)] = ch;
+					}
+				}
+				name_length = static_cast<int>(i);
+			}
+			else { name_length = 0; }
+		}
+		else { name_length = 0; }
+	}
+	return name_length;
+}
+WTL::CString LCIDToLocaleName_XPCompatible(LCID lcid)
+{
+	WTL::CString result;
+	LPTSTR const buf = result.GetBufferSetLength(64);
+	int const n = LCIDToLocaleName_XPCompatible(lcid, buf, result.GetLength());
+	result.Delete(n, result.GetLength() - n);
+	return result;
+}
+
+HMODULE mui_module = NULL;
 WTL::CAppModule _Module;
 
 int _tmain(int argc, TCHAR* argv[])
@@ -4688,14 +5002,14 @@ int _tmain(int argc, TCHAR* argv[])
 			LPVOID pBinary = LockResource(LoadResource(NULL, hRsrs));
 			if (pBinary)
 			{
-				std::basic_string<TCHAR> tempDir(32 * 1024, _T('\0'));
+				std::tstring tempDir(32 * 1024, _T('\0'));
 				tempDir.resize(GetTempPath(static_cast<DWORD>(tempDir.size()), &tempDir[0]));
 				if (!tempDir.empty())
 				{
-					std::basic_string<TCHAR> fileName = tempDir + _T("SwiftSearch64_{3CACE9B1-EF40-4a3b-B5E5-3447F6A1E703}.exe");
+					std::tstring fileName = tempDir + _T("SwiftSearch64_{3CACE9B1-EF40-4a3b-B5E5-3447F6A1E703}.exe");
 					struct Deleter
 					{
-						std::basic_string<TCHAR> file;
+						std::tstring file;
 						~Deleter() { if (!this->file.empty()) { _tunlink(this->file.c_str()); } }
 					} deleter;
 					bool success;
@@ -4750,20 +5064,47 @@ int _tmain(int argc, TCHAR* argv[])
 	HANDLE hEvent = CreateEvent(NULL, FALSE, FALSE, _T("Local\\SwiftSearch.{CB77990E-A78F-44dc-B382-089B01207F02}"));
 	if (hEvent != NULL && GetLastError() != ERROR_ALREADY_EXISTS)
 	{
-		typedef long(WINAPI *PNtSetTimerResolution)(unsigned long DesiredResolution, bool SetResolution, unsigned long *CurrentResolution);
-		if (PNtSetTimerResolution const NtSetTimerResolution = reinterpret_cast<PNtSetTimerResolution>(GetProcAddress(GetModuleHandle(TEXT("ntdll.dll")), "NtSetTimerResolution")))
-		{
-			unsigned long prev; NtSetTimerResolution(1, true, &prev);
-		}
 		(void) argc;
 		(void) argv;
-		// pi();
+		bool right_to_left = false;
+		unsigned long reading_layout;
+		if (GetLocaleInfo(GetThreadLocale(), 0x00000070 /*LOCALE_IREADINGLAYOUT*/ | LOCALE_RETURN_NUMBER, reinterpret_cast<LPTSTR>(&reading_layout), sizeof(reading_layout) / sizeof(TCHAR)) >= sizeof(reading_layout) / sizeof(TCHAR))
+		{
+			right_to_left = reading_layout == 1;
+		}
+		if (right_to_left)
+		{
+			SetProcessDefaultLayout(LAYOUT_RTL);
+		}
 		HINSTANCE const hInstance = GetModuleHandle(NULL);
 		__if_exists(_Module) { _Module.Init(NULL, hInstance); }
 		{
 			WTL::CMessageLoop msgLoop;
 			_Module.AddMessageLoop(&msgLoop);
-			CMainDlg wnd(hEvent);
+			std::tstring module_path;
+			if (argc > 0)
+			{
+				module_path = argv[0];
+			}
+			else
+			{
+				module_path.resize(USHRT_MAX, _T('\0'));
+				module_path.resize(GetModuleFileName(hInstance, module_path.empty() ? NULL : &*module_path.begin(), static_cast<unsigned int>(module_path.size())));
+			}
+			if (!module_path.empty())
+			{
+				// https://blogs.msdn.microsoft.com/jsocha/2011/12/14/allowing-localizing-after-the-fact-using-mui/
+				std::tstring module_name = module_path;
+				module_name.erase(module_name.begin(), basename(module_name.begin(), module_name.end()));
+				std::tstring module_directory = module_path;
+				module_directory.erase(dirname(module_directory.begin(), module_directory.end()), module_directory.end());
+				if (!module_directory.empty())
+				{
+					module_directory += getdirsep();
+				}
+				mui_module = LoadLibraryEx((module_directory + static_cast<LPCTSTR>(LCIDToLocaleName_XPCompatible(GetThreadLocale())) + getdirsep() + module_name + TEXT(".mui")).c_str(), NULL, LOAD_LIBRARY_AS_DATAFILE);
+			}
+			CMainDlg wnd(hEvent, right_to_left);
 			wnd.Create(reinterpret_cast<HWND>(NULL), NULL);
 			wnd.ShowWindow(SW_SHOWDEFAULT);
 			msgLoop.Run();

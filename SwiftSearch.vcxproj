@@ -124,6 +124,9 @@
     <Manifest>
       <AdditionalManifestFiles>"$(ProjectDir)$(ProjectName).manifest" %(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
+    <PostBuildEvent>
+      <Command>PostBuild "$(TargetPath)" "$(Configuration)" "$(Platform)" "$(LangID)" "$(SolutionDir)x64\$(Configuration)\$(TargetFileName)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -147,6 +150,9 @@
     <Manifest>
       <AdditionalManifestFiles>"$(ProjectDir)$(ProjectName).manifest" %(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
+    <PostBuildEvent>
+      <Command>PostBuild "$(TargetPath)" "$(Configuration)" "$(Platform)" "$(LangID)" "$(SolutionDir)x64\$(Configuration)\$(TargetFileName)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -158,6 +164,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalOptions>/d2Zi+ %(AdditionalOptions)</AdditionalOptions>
+      <OpenMPSupport>true</OpenMPSupport>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -169,8 +176,7 @@
       <Profile>true</Profile>
     </Link>
     <PostBuildEvent>
-      <Command>EditBin.exe /NoLogo "$(TargetPath)" /Subsystem:Windows,5.01 /OSVersion:4
-Echo Embedding 64-bit version...&amp;&amp; Path %PATH%;%ProgramFiles%\Resource Hacker;%ProgramFiles(x86)%\Resource Hacker&amp;&amp; ResHacker -addoverwrite "$(TargetPath)", "$(TargetPath)", "$(SolutionDir)x64\$(Configuration)\$(TargetFileName)", BINARY, "AMD64", "$(LangID)"</Command>
+      <Command>PostBuild "$(TargetPath)" "$(Configuration)" "$(Platform)" "$(LangID)" "$(SolutionDir)x64\$(Configuration)\$(TargetFileName)"</Command>
     </PostBuildEvent>
     <Manifest>
       <AdditionalManifestFiles>"$(ProjectDir)$(ProjectName).manifest" %(AdditionalManifestFiles)</AdditionalManifestFiles>
@@ -200,8 +206,7 @@ Echo Embedding 64-bit version...&amp;&amp; Path %PATH%;%ProgramFiles%\Resource H
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
     </Link>
     <PostBuildEvent>
-      <Command>EditBin.exe /NoLogo "$(TargetPath)" /Subsystem:Windows,5.01 /OSVersion:4
-Echo Embedding 64-bit version...&amp;&amp; Path %PATH%;%ProgramFiles%\Resource Hacker;%ProgramFiles(x86)%\Resource Hacker&amp;&amp; ResHacker -addoverwrite "$(TargetPath)", "$(TargetPath)", "$(SolutionDir)x64\$(Configuration)\$(TargetFileName)", BINARY, "AMD64", "$(LangID)"</Command>
+      <Command>PostBuild "$(TargetPath)" "$(Configuration)" "$(Platform)" "$(LangID)" "$(SolutionDir)x64\$(Configuration)\$(TargetFileName)"</Command>
     </PostBuildEvent>
     <Manifest>
       <AdditionalManifestFiles>"$(ProjectDir)$(ProjectName).manifest" %(AdditionalManifestFiles)</AdditionalManifestFiles>
@@ -218,6 +223,7 @@ Echo Embedding 64-bit version...&amp;&amp; Path %PATH%;%ProgramFiles%\Resource H
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalOptions>/d2Zi+ %(AdditionalOptions)</AdditionalOptions>
+      <OpenMPSupport>true</OpenMPSupport>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -229,7 +235,7 @@ Echo Embedding 64-bit version...&amp;&amp; Path %PATH%;%ProgramFiles%\Resource H
       <Profile>true</Profile>
     </Link>
     <PostBuildEvent>
-      <Command>EditBin.exe /NoLogo "$(TargetPath)" /Subsystem:Windows,5.02 /OSVersion:5.1</Command>
+      <Command>PostBuild "$(TargetPath)" "$(Configuration)" "$(Platform)" "$(LangID)" "$(SolutionDir)x64\$(Configuration)\$(TargetFileName)"</Command>
     </PostBuildEvent>
     <Manifest>
       <AdditionalManifestFiles>"$(ProjectDir)$(ProjectName).manifest" %(AdditionalManifestFiles)</AdditionalManifestFiles>
@@ -258,7 +264,7 @@ Echo Embedding 64-bit version...&amp;&amp; Path %PATH%;%ProgramFiles%\Resource H
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
     </Link>
     <PostBuildEvent>
-      <Command>EditBin.exe /NoLogo "$(TargetPath)" /Subsystem:Windows,5.02 /OSVersion:5.1</Command>
+      <Command>PostBuild "$(TargetPath)" "$(Configuration)" "$(Platform)" "$(LangID)" "$(SolutionDir)x64\$(Configuration)\$(TargetFileName)"</Command>
     </PostBuildEvent>
     <Manifest>
       <AdditionalManifestFiles>"$(ProjectDir)$(ProjectName).manifest" %(AdditionalManifestFiles)</AdditionalManifestFiles>

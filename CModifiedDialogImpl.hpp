@@ -8,9 +8,9 @@
 template<class T, class TBase = ATL::CWindow>
 class CModifiedDialogImpl : public ATL::CDialogImpl<T, TBase>
 {
-	bool useSystemFont;
+	bool useSystemFont, rtl;
 public:
-	CModifiedDialogImpl(bool useSystemFont = true) : useSystemFont(useSystemFont) { }
+	CModifiedDialogImpl(bool useSystemFont = true, bool const rtl = false) : useSystemFont(useSystemFont), rtl(rtl) { }
 
 	INT_PTR DoModal(HWND hWndParent = ::GetActiveWindow(), LPARAM dwInitParam = NULL)
 	{
@@ -96,6 +96,18 @@ public:
 		ATLASSERT(pTemplate != NULL);
 		SIZE_T size = GlobalSize(hGlobal);
 		memcpy(buffer, pTemplate, static_cast<SIZE_T>(cbLen) < size ? static_cast<SIZE_T>(cbLen) : size);
+		if (cbLen >= sizeof(DWORD))
+		{
+			bool const exdialog = HIWORD(buffer->style) == 0xFFFF;
+			DWORD *const exstyle = exdialog ? reinterpret_cast<DWORD *>(&buffer->cdit) : &buffer->dwExtendedStyle;
+			if (cbLen >= static_cast<size_t>(reinterpret_cast<unsigned char const *>(exstyle + 1) - reinterpret_cast<unsigned char const *>(buffer)))
+			{
+				if (rtl)
+				{
+					*exstyle |= WS_EX_LAYOUTRTL;
+				}
+			}
+		}
 		GlobalFree(hGlobal);
 		return static_cast<DWORD>(size);
 	}

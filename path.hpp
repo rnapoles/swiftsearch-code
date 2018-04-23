@@ -87,7 +87,7 @@ Str &adddirsep(Str &str)
 				break;
 			}
 		}
-		str += ch;
+		str.push_back(ch);
 	}
 	return str;
 }

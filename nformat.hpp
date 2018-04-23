@@ -9,6 +9,28 @@
 #include <string>
 #include <sstream>
 
+template<class Char>
+struct basic_conv;
+
+template<> struct basic_conv< char  > { typedef  char   char_type; template<class OutIt> static OutIt plus_sign(OutIt i) { *i =  '+'; ++i; return i; } template<class OutIt> static OutIt ex(OutIt i) { *i =  'x'; ++i; return i; } template<class T> static void to_string(T const &value, char_type *const buffer, unsigned char const radix); };
+template<> struct basic_conv<wchar_t> { typedef wchar_t char_type; template<class OutIt> static OutIt plus_sign(OutIt i) { *i = L'+'; ++i; return i; } template<class OutIt> static OutIt ex(OutIt i) { *i = L'x'; ++i; return i; } template<class T> static void to_string(T const &value, char_type *const output, unsigned char const radix); };
+#define X(Char, Int, IToA, AToI) template<> inline void basic_conv<Char>::to_string<Int>(Int const &value, Char *const buffer, unsigned char const radix) { IToA(value, buffer, radix); } template<class> struct basic_conv;
+X( char  ,   signed      char,     itoa,     atoi);
+X( char  ,   signed     short,     itoa,     atoi);
+X( char  ,   signed       int,     itoa,     atoi);
+X( char  ,   signed      long,     ltoa,     atol);
+X( char  , unsigned      long,   _ultoa,   _atoul);
+X( char  ,   signed long long,  _i64toa,  _atoi64);
+X( char  , unsigned long long, _ui64toa, _atoui64);
+X(wchar_t,   signed      char,    _itow,    _wtoi);
+X(wchar_t,   signed     short,    _itow,    _wtoi);
+X(wchar_t,   signed       int,    _itow,    _wtoi);
+X(wchar_t,   signed      long,    _ltow,    _wtol);
+X(wchar_t, unsigned      long,   _ultow,   _wtoul);
+X(wchar_t,   signed long long,  _i64tow,  _wtoi64);
+X(wchar_t, unsigned long long, _ui64tow, _wtoui64);
+#undef  X
+
 template<class OutIt, class Traits = std::char_traits<typename std::iterator_traits<OutIt>::value_type> >
 class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Traits>
 {
@@ -18,6 +40,7 @@ class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Tra
 	typedef std::ctype<char_type> CType;
 	basic_iterator_ios(this_type const &);
 	this_type &operator =(this_type const &);
+	typedef std::numpunct<char_type> NumPunct;
 	typedef std::num_put<char_type, OutIt> NumPut;
 #if defined(_MSC_VER) && !defined(_WIN64) && (!defined(_CPPLIB_VER) || _CPPLIB_VER < 403)
 	struct NumPutHacked : public NumPut
@@ -63,19 +86,21 @@ class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Tra
 #endif
 	static NumPutHacked const *numput_instance() { NumPutHacked const *p = new NumPutHacked(); return p; }
 	std::ios_base *me;
+	NumPunct const *numpunct;
+	std::string numpunct_grouping;
 	NumPut const *num_put;
 	void event_callback(std::ios_base::event const type)
 	{
 		if (type == std::ios_base::imbue_event)
 		{
 			std::locale loc = this->getloc();
-			bool has_facet;
+			bool has_num_put;
 #ifdef _ADDFAC
-			has_facet = std::_HAS(loc, NumPut);
+			has_num_put = std::_HAS(loc, NumPut);
 #else
-			has_facet = std::has_facet<NumPut>(loc);
+			has_num_put = std::has_num_put<NumPut>(loc);
 #endif
-			if (has_facet)
+			if (has_num_put)
 			{
 				this->num_put = &
 #ifdef _ADDFAC
@@ -89,6 +114,14 @@ class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Tra
 			{
 				this->num_put = numput_instance();
 			}
+			this->numpunct = &
+#ifdef _ADDFAC
+				std::_USE(loc, NumPunct)
+#else
+				std::use_facet<NumPunct>(loc)
+#endif
+				;
+			this->numpunct_grouping = this->numpunct->grouping();
 		}
 	}
 	static void event_callback(std::ios_base::event type, ios_base &base, int)
@@ -96,9 +129,67 @@ class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Tra
 		return static_cast<this_type &>(base).event_callback(type);
 	}
 	template<class T>
-	OutIt do_put(OutIt const &i, T const &value) const
+	OutIt do_put(OutIt i, T const &value) const
 	{
-		return static_cast<NumPutHacked const *>(this->num_put)->put(i, *this->me, this->base_type::fill(), value);
+		bool unsupported = false;
+		std::ios_base::fmtflags const flags = this->flags();
+		if (flags & std::ios_base::right) { unsupported = true; }
+		if (flags & std::ios_base::internal) { unsupported = true; }
+		if (flags & std::ios_base::left) { unsupported = true;}
+		if (flags & std::ios_base::boolalpha) { unsupported = true; }
+		if (flags & std::ios_base::uppercase) { unsupported = true; /* this is because the itoa() family doesn't allow control over capitalization */  }
+		if (flags & std::ios_base::fixed) { unsupported = true;}
+		if (flags & std::ios_base::scientific) { unsupported = true; }
+		if (unsupported)
+		{
+			i = static_cast<NumPutHacked const *>(this->num_put)->put(i, *this->me, this->base_type::fill(), value);
+		}
+		else
+		{
+			unsigned char radix = 10;
+			if (flags & std::ios_base::oct) { radix =  010; }
+			if (flags & std::ios_base::dec) { radix =   10; }
+			if (flags & std::ios_base::hex) { radix = 0x10; }
+			if (flags & std::ios_base::showbase)
+			{
+				if (radix !=   10) { char_type zbuf[16]; basic_conv<char_type>::to_string(T(), zbuf, radix); i = std::copy(zbuf, zbuf + static_cast<ptrdiff_t>(std::char_traits<char_type>::length(zbuf)), i); }
+				if (radix == 0x10) { i = basic_conv<char_type>::ex(i); }
+			}
+			char_type buf[2 * _MAX_INT_DIG];
+			buf[0] = char_type();
+			basic_conv<char_type>::to_string(value, buf, radix);
+			size_t n = std::char_traits<char_type>::length(buf);
+			if (flags & std::ios_base::showpos) { T zero = T(); if (value >= zero) { i = basic_conv<char_type>::plus_sign(i); } }
+			size_t const ngroups = this->numpunct_grouping.size();
+			if (ngroups > 0)
+			{
+				char_type const sep = this->numpunct->thousands_sep();
+				size_t nseps = 0;
+				size_t igroup;
+				for (int pass = 0; pass < 2; ++pass)
+				{
+					size_t o = n + nseps;
+					igroup = 0;
+					size_t ngrouprem = this->numpunct_grouping[igroup];
+					for (size_t j = n; j != 0 && ((void)--j, true); )
+					{
+						if (!ngrouprem)
+						{
+							ngrouprem = this->numpunct_grouping[igroup];
+							if (!pass) { ++nseps; }
+							else {buf[--o] = sep; }
+							igroup += igroup + 1 < ngroups;
+						}
+						if (pass) { buf[--o] = buf[j]; }
+						ngrouprem -= !!ngrouprem;
+					}
+				}
+				n += nseps;
+			}
+			i = std::copy(buf, buf + static_cast<ptrdiff_t>(n), i);
+			if (flags & std::ios_base::showpoint) { *i = this->numpunct->decimal_point(); ++i; }
+		}
+		return i;
 	}
 	void init()
 	{
@@ -121,8 +212,8 @@ public:
 			return result;
 		}
 	};
-	basic_iterator_ios()                                : base_type(), me(), num_put() { this->init(); }
-	explicit basic_iterator_ios(std::locale const &loc) : base_type(), me(), num_put() { this->init(); this->imbue(loc); }
+	basic_iterator_ios()                                : base_type(), me(), numpunct(), num_put() { this->init(); }
+	explicit basic_iterator_ios(std::locale const &loc) : base_type(), me(), numpunct(), num_put() { this->init(); this->imbue(loc); }
 	OutIt put(OutIt const &i,                 bool const value) const { return this->do_put(i, value); }
 	OutIt put(OutIt const &i,                 char const value) const { return this->do_put(i, value); }
 #ifdef _NATIVE_WCHAR_T_DEFINED
@@ -156,108 +247,5 @@ public:
 	this_type const &str() const { return *this; }
 	std::back_insert_iterator<base_type> back_inserter() { return std::back_insert_iterator<base_type>(*this); }
 };
-
-class NumberFormatter
-{
-public:
-#ifdef _M_X64
-	static unsigned int base_10_digits(unsigned long long x)
-	{
-		// https://stackoverflow.com/a/25934909
-		unsigned int digits = 0;
-		unsigned long leading_zero = 0;
-		switch (_BitScanReverse64(&leading_zero, x) ? leading_zero + 1 : 0)
-		{
-		case 0: case 1: case 2: case 3: digits = 0; break;
-		case 4: case 5: case 6: digits = 1; break;
-		case 7: case 8: case 9: digits = 2; break;
-		case 10: case 11: case 12: case 13: digits = 3; break;
-		case 14: case 15: case 16: digits = 4; break;
-		case 17: case 18: case 19: digits = 5; break;
-		case 20: case 21: case 22: case 23: digits = 6; break;
-		case 24: case 25: case 26: digits = 7; break;
-		case 27: case 28: case 29: digits = 8; break;
-		case 30: case 31: case 32: case 33: digits = 9; break;
-		case 34: case 35: case 36: digits = 10; break;
-		case 37: case 38: case 39: digits = 11; break;
-		case 40: case 41: case 42: case 43: digits = 12; break;
-		case 44: case 45: case 46: digits = 13; break;
-		case 47: case 48: case 49: digits = 14; break;
-		case 50: case 51: case 52: case 53: digits = 15; break;
-		case 54: case 55: case 56: digits = 16; break;
-		case 57: case 58: case 59: digits = 17; break;
-		case 60: case 61: case 62: case 63: digits = 18; break;
-		case 64: digits = 19; break;
-		default: break;
-		}
-		unsigned long long i = 0;
-		switch (digits)
-		{
-		case  0: i = 1; break;
-		case  1: i = 10; break;
-		case  2: i = 100; break;
-		case  3: i = 1000; break;
-		case  4: i = 10000; break;
-		case  5: i = 100000; break;
-		case  6: i = 1000000; break;
-		case  7: i = 10000000; break;
-		case  8: i = 100000000; break;
-		case  9: i = 1000000000; break;
-		case 10: i = 10000000000; break;
-		case 11: i = 100000000000; break;
-		case 12: i = 1000000000000; break;
-		case 13: i = 10000000000000; break;
-		case 14: i = 100000000000000; break;
-		case 15: i = 1000000000000000; break;
-		case 16: i = 10000000000000000; break;
-		case 17: i = 100000000000000000; break;
-		case 18: i = 1000000000000000000; break;
-		case 19: i = 10000000000000000000; break;
-		default: break;
-		}
-		return digits + (x >= i);
-	}
-#endif
-
-	template<class V>
-	static void format_fast_ascii_append(std::basic_string<TCHAR> &result, V value, size_t const min_width);
-
-	std::basic_string<TCHAR> const &operator()(unsigned long long v);
-};
-
-
-template<class V>
-inline void NumberFormatter::format_fast_ascii_append(std::basic_string<TCHAR> &result, V value, size_t const min_width)
-{
-	size_t const n = result.size();
-	V const radix = 10;
-	for (size_t i = 0; value != 0 || i < min_width; ++i)
-	{
-		V rem = static_cast<V>(value % radix);
-		while (rem < 0) { rem += radix; }
-		result += static_cast<TCHAR>(_T('0') + rem);
-		value /= radix;
-	}
-	std::reverse(result.begin() + static_cast<ptrdiff_t>(n), result.end());
-}
-
-#ifdef _M_X64
-template<>
-inline void NumberFormatter::format_fast_ascii_append<unsigned long long>(std::basic_string<TCHAR> &result, unsigned long long value, size_t const min_width)
-{
-	size_t digits10 = base_10_digits(static_cast<unsigned long long>(value));
-	if (digits10 < min_width) { digits10 = min_width; }
-	size_t const n = result.size();
-	result.resize(n + digits10);
-	unsigned char const radix = 10;
-	for (size_t i = 0; value != 0 || i < min_width; ++i)
-	{
-		long long rem = static_cast<long long>(value % radix);
-		while (rem < 0) { rem += radix; }
-		result[n + digits10 - 1 - i] = static_cast<TCHAR>(_T('0') + rem);
-		value /= radix;
-	}
-}
-#endif
 
 #endif
