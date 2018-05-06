@@ -61,7 +61,7 @@ public:
 
 class BackgroundWorkerImpl : public BackgroundWorker
 {
-	static bool use_window_messages() { return false; }
+	static bool use_window_messages() { return true; }
 	class CoInit
 	{
 		CoInit(CoInit const &) : hr(S_FALSE) { }

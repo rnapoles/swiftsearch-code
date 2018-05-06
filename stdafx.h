@@ -25,6 +25,8 @@
 #endif
 
 
+#pragma warning(push)
+#pragma warning(disable: 4571)  // Informational: catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught
 #include "WinDDKFixes.hpp"
 
 #include <process.h>
@@ -34,10 +36,15 @@
 #include <time.h>
 
 #include <algorithm>
-#include <deque>
+#include <cassert>
+#include <fstream>
+#include <iterator>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
+#pragma warning(pop)
+
 namespace WTL { using std::min; using std::max; }
 
 #ifndef _CPPLIB_VER
@@ -62,6 +69,7 @@ namespace WTL { using std::min; using std::max; }
 #pragma warning(disable: 4457)  // declaration of 'pstr' hides function parameter
 #pragma warning(disable: 4555)  // expression has no effect; expected expression with side-effect
 #pragma warning(disable: 4838)  // conversion requires a narrowing conversion
+#pragma warning(disable: 4917)  // a GUID can only be associated with a class, interface or namespace
 #pragma warning(disable: 4987)  // nonstandard extension used: 'throw (...)'
 #include <atlbase.h>
 #include <atlapp.h>

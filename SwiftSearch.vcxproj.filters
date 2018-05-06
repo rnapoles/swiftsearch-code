@@ -30,6 +30,9 @@
     <ClInclude Include="NtUserCallHook.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="CModifiedDialogImpl.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -40,11 +43,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <Image Include="Search Drive.ico">
-      <Filter>Resource Files</Filter>
-    </Image>
-  </ItemGroup>
-  <ItemGroup>
     <ResourceCompile Include="SwiftSearch.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
@@ -53,8 +51,5 @@
     <CustomBuild Include="CxxFrameHandler.asm">
       <Filter>Source Files</Filter>
     </CustomBuild>
-  </ItemGroup>
-  <ItemGroup>
-    <Manifest Include="SwiftSearch.manifest" />
   </ItemGroup>
 </Project>

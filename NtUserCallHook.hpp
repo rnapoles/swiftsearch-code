@@ -10,66 +10,80 @@ class Hook
 	Hook &operator =(Hook const &);
 	int set_hook(void *new_proc)
 	{
-		int r;
+		unsigned char proc_buf_size;
 		unsigned char *const proc_buf = reinterpret_cast<unsigned char *const &>(*this->ptr);
 #ifdef _WIN64
 		if (memcmp(&proc_buf[0], "\x4C\x8B\xD1\xB8", 4) == 0 &&
 			memcmp(&proc_buf[8], "\xF6\x04\x25", 3) == 0 &&
 			memcmp(&proc_buf[16], "\x75\x03\x0F\x05\xC3\xCD\x2E\xC3", 8) == 0)
 		{
-			unsigned int const proc_buf_size = sizeof(this->old_proc);
-			memcpy(this->old_proc, proc_buf, proc_buf_size);
-			DWORD old_protect;
-			if (VirtualProtect(this->old_proc, proc_buf_size, PAGE_EXECUTE_READWRITE, &old_protect) &&
-				VirtualProtect(proc_buf, proc_buf_size, PAGE_EXECUTE_READWRITE, &old_protect))
-			{
-				ptrdiff_t j = 0;
-				proc_buf[j++] = 0x48;
-				proc_buf[j++] = 0xB8;
-				j += ((void)memcpy(&proc_buf[j], &new_proc, sizeof(new_proc)), sizeof(new_proc));
-				proc_buf[j++] = 0xFF;
-				proc_buf[j++] = 0xE0;
-				VirtualProtect(proc_buf, proc_buf_size, old_protect, &old_protect);
-				*this->ptr = reinterpret_cast<func_type *>(&this->old_proc[0]);
-				r = 1;
-			}
-			else { r = 0; }
+			proc_buf_size = 24;
 		}
-		else { r = 0; }
 #else
 		if (memcmp(&proc_buf[0], "\xB8", 1) == 0 &&
 			memcmp(&proc_buf[5], "\xE8", 1) == 0 &&
 			memcmp(&proc_buf[10], "\xC2", 1) == 0)  // raw 32-bit
 		{
-			r = 0;
+			proc_buf_size = 13;
 		}
 		else if (memcmp(&proc_buf[0], "\xB8", 1) == 0 &&
 			memcmp(&proc_buf[5], "\xBA", 1) == 0 &&
 			memcmp(&proc_buf[10], "\xFF", 1) == 0 &&
 			memcmp(&proc_buf[12], "\xC2", 1) == 0)  // WOW64
 		{
-			r = 0;
+			proc_buf_size = 15;
+		}
+#endif
+		else { proc_buf_size = 0; }
+
+		int r;
+		DWORD old_protect;
+		if (proc_buf_size && VirtualProtect(this->old_proc, proc_buf_size, PAGE_EXECUTE_READWRITE, &old_protect) &&
+			VirtualProtect(proc_buf, proc_buf_size, PAGE_READWRITE /* no execute permission, to make sure nobody calls it concurrently */, &old_protect))
+		{
+			std::copy(&proc_buf[0], &proc_buf[proc_buf_size], this->old_proc);
+			ptrdiff_t j = 0;
+#ifdef _WIN64
+			proc_buf[j++] = 0x48;
+#endif
+			proc_buf[j++] = 0xB8;
+			j += std::copy(reinterpret_cast<unsigned char const *>(&new_proc), reinterpret_cast<unsigned char const *>(&new_proc + 1), &proc_buf[j]) - &proc_buf[j];
+			proc_buf[j++] = 0xFF;
+			proc_buf[j++] = 0xE0;
+			FlushInstructionCache(GetCurrentProcess(), proc_buf, proc_buf_size);
+			VirtualProtect(proc_buf, proc_buf_size, old_protect, &old_protect);
+			this->old_func = *this->ptr;
+			this->old_proc_size = proc_buf_size;
+			*this->ptr = reinterpret_cast<func_type *>(&this->old_proc[0]);
+			r = 1;
 		}
 		else { r = 0; }
-#endif
 		return r;
 	}
 	int unset_hook()
 	{
-		return 0;
+		int r;
+		size_t const proc_buf_size = this->old_proc_size;
+		unsigned char *const proc_buf = reinterpret_cast<unsigned char *const &>(this->old_func);
+		DWORD old_protect;
+		if (proc_buf_size && VirtualProtect(proc_buf, proc_buf_size, PAGE_READWRITE /* no execute permission, to make sure nobody calls it concurrently */, &old_protect))
+		{
+			std::copy(&this->old_proc[0], &this->old_proc[proc_buf_size], proc_buf);
+			FlushInstructionCache(GetCurrentProcess(), proc_buf, proc_buf_size);
+			VirtualProtect(proc_buf, proc_buf_size, old_protect, &old_protect);
+			this->old_func = NULL;
+			r = 1;
+		}
+		else { r = 0; }
+		return r;
 	}
 	typedef void func_type();
-	func_type **ptr;
-	unsigned char old_proc[
-#ifdef _WIN64
-		24
-#else
-		1
-#endif
-	];
+	func_type **ptr, *old_func;
+	unsigned char old_proc[32];
+	size_t old_proc_size;
 protected:
 	~Hook() { this->term(); }
-	Hook() : ptr() { }
+	Hook() : ptr(), old_func(), old_proc_size() { }
 	bool do_init(func_type *&ptr, func_type *old_func, func_type *new_func)
 	{
 		bool result = false;
