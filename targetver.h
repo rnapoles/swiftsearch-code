@@ -14,6 +14,7 @@
 #ifndef _DEBUG
 #pragma warning(disable: 4005)  // macro redefinition  // Only in DDK compilations (which are Release-mode)...
 #endif
+#pragma warning(disable: 4061)  // enumerator in switch of enum is not explicitly handled by a case label
 #pragma warning(disable: 4062)  // enumerator in switch of enum is not handled
 #pragma warning(disable: 4100)  // unreferenced formal parameter
 #ifndef _DEBUG
@@ -33,6 +34,7 @@
 #endif
 #pragma warning(disable: 4510)  // default constructor could not be generated
 #pragma warning(disable: 4512)  // assignment operator could not be generated
+#pragma warning(disable: 4571)  // Informational: catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught
 #pragma warning(disable: 4610)  // can never be instantiated - user defined constructor required
 #pragma warning(disable: 4623)  // default constructor was implicitly defined as deleted
 #pragma warning(disable: 4624)  // destructor was implicitly defined as deleted because a base class destructor is inaccessible or deleted

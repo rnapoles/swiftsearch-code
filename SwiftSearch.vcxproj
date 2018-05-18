@@ -55,7 +55,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v120_xp</PlatformToolset>
+    <PlatformToolset>v140_xp</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
@@ -67,7 +67,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v120_xp</PlatformToolset>
+    <PlatformToolset>v140_xp</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -169,6 +169,7 @@
       <TreatWChar_tAsBuiltInType>false</TreatWChar_tAsBuiltInType>
       <EnableEnhancedInstructionSet>NoExtensions</EnableEnhancedInstructionSet>
       <DebugInformationFormat>None</DebugInformationFormat>
+      <AdditionalOptions>/Zc:sizedDealloc- /Zc:threadSafeInit- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -176,6 +177,7 @@
       <AdditionalLibraryDirectories>$(SystemDrive)\WinDDK\3790.1830\lib\atl\i386;$(SystemDrive)\WinDDK\3790.1830\lib\crt\i386;$(SystemDrive)\WinDDK\3790.1830\lib\mfc\i386;$(SystemDrive)\WinDDK\3790.1830\lib\wxp\i386;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalOptions>/PDBALTPATH:%_PDB% /DefaultLib:shlwapi.lib /DefaultLib:atlthunk.lib %(AdditionalOptions)</AdditionalOptions>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
     </Link>
     <PostBuildEvent />
     <PreLinkEvent />
@@ -208,6 +210,7 @@
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <TreatWChar_tAsBuiltInType>false</TreatWChar_tAsBuiltInType>
       <DebugInformationFormat>None</DebugInformationFormat>
+      <AdditionalOptions>/Zc:sizedDealloc- /Zc:threadSafeInit- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -215,20 +218,129 @@
       <AdditionalLibraryDirectories>$(SystemDrive)\WinDDK\3790.1830\lib\atl\amd64;$(SystemDrive)\WinDDK\3790.1830\lib\crt\amd64;$(SystemDrive)\WinDDK\3790.1830\lib\mfc\amd64;$(SystemDrive)\WinDDK\3790.1830\lib\wnet\amd64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalOptions>/PDBALTPATH:%_PDB% /DefaultLib:shlwapi.lib /DefaultLib:atlthunk.lib %(AdditionalOptions)</AdditionalOptions>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
     </Link>
     <PostBuildEvent />
     <PreLinkEvent />
     <PreBuildEvent />
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="BackgroundWorker.hpp" />
+    <ClInclude Include="CDlgTemplate.hpp" />
     <ClInclude Include="CModifiedDialogImpl.hpp" />
     <ClInclude Include="nformat.hpp" />
     <ClInclude Include="NtUserCallHook.hpp" />
+    <ClInclude Include="path.hpp" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="ShellItemIDList.hpp" />
     <ClInclude Include="stdafx.h" />
+    <ClInclude Include="string_matcher.hpp" />
     <ClInclude Include="targetver.h" />
+    <ClInclude Include="WinDDKFixes.hpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\cpp_regex_traits.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\cregex.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\c_regex_traits.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\fileiter.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\icu.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\instances.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\posix_api.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\regex.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\regex_debug.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\regex_raw_buffer.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\regex_traits_defaults.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\static_mutex.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\usinstances.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\w32_regex_traits.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\wc_regex_traits.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\wide_posix_api.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(BOOST_ROOT)libs\regex\src\winstances.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
@@ -237,6 +349,7 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'">Create</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="string_matcher.cpp" />
     <ClCompile Include="SwiftSearch.cpp" />
   </ItemGroup>
   <ItemGroup>

@@ -10,13 +10,13 @@ var
 	SCRIPT_DIRECTORY = FileSystemObject.GetParentFolderName(SCRIPT_PATH),
 	SCRIPT_NAME      = WScript.ScriptName;
 	SCRIPT_BASE_NAME = FileSystemObject.GetBaseName(SCRIPT_NAME);
-function generate_mui_file(target_path, langid) {
+function generate_mui_file(target_path, langid, langname) {
 	var target_dir = FileSystemObject.GetParentFolderName(target_path);
 	var target_name = FileSystemObject.GetFileName(target_path);
 	var target_base_name = FileSystemObject.GetBaseName(target_path);
 	var target_ext = FileSystemObject.GetExtensionName(target_path);
 	var target_ln_path = FileSystemObject.BuildPath(target_dir, target_base_name + ".ln" + "." + target_ext);
-	var target_mui_dir = FileSystemObject.BuildPath(target_dir, langid);
+	var target_mui_dir = FileSystemObject.BuildPath(target_dir, langname);
 	try {
 		FileSystemObject.CreateFolder(target_mui_dir);
 	} catch (ex) {
@@ -36,12 +36,23 @@ var CALLBACKS = {
 		// Merge STRINGTABLE objects
 		var  input_file_name = FileSystemObject.BuildPath(SCRIPT_DIRECTORY, SCRIPT_BASE_NAME) + ".rc";
 		var output_file_name = input_file_name;
-		var unicode = true;
-		var data;
+		var unicode = false;
+		var data = null;
 		{
-			var infile = input_file_name ? FileSystemObject.OpenTextFile(input_file_name, ForReading, false, unicode ? TristateTrue : TristateFalse) : FileSystemObject.GetStandardStream(0, unicode);
-			data = infile.ReadAll();
-			infile.Close();
+			if (input_file_name) {
+				var testinfile = FileSystemObject.OpenTextFile(input_file_name, ForReading, false, unicode ? TristateTrue : TristateFalse);
+				var data = testinfile.ReadAll();
+				if (data.indexOf('\0') >= 0) {
+					unicode = true;
+					data = null;
+				}
+				testinfile.Close();
+			}
+			if (data === null) {
+				var infile = input_file_name ? FileSystemObject.OpenTextFile(input_file_name, ForReading, false, unicode ? TristateTrue : TristateFalse) : FileSystemObject.GetStandardStream(0, unicode);
+				data = infile.ReadAll();
+				infile.Close();
+			}
 		}
 		var changes = 0;
 		for (; ; )
@@ -69,11 +80,11 @@ var CALLBACKS = {
 	'postbuild': function postbuild(argv) {
 		var result;
 		var iarg = 0;
-		var target_path = argv[iarg++], configuration = argv[iarg++], platform = argv[iarg++], langid = argv[iarg++];
+		var target_path = argv[iarg++], configuration = argv[iarg++], platform = argv[iarg++], langid = argv[iarg++], langname = argv[iarg++];
 		var target_dir = FileSystemObject.GetParentFolderName(target_path);
 		var target_name = FileSystemObject.GetFileName(target_path);
 		WScript.StdErr.WriteLine("Generating MUI file...");
-		result = generate_mui_file(target_path, langid);
+		result = generate_mui_file(target_path, langid, langname);
 		if (result === 0 && target_dir.endsWith(FileSystemObject.BuildPath(platform, configuration)) /* path is in expected format */ && (platform === "Win32" || platform === "x86")) {
 			WScript.StdErr.WriteLine("Embedding 64-bit executable...");
 			result = system(["ResHacker", "-addoverwrite", target_path, ",", target_path, ",", FileSystemObject.BuildPath(FileSystemObject.BuildPath(FileSystemObject.BuildPath(FileSystemObject.GetParentFolderName(FileSystemObject.GetParentFolderName(target_dir)), "x64"), configuration), target_name), ",", "BINARY", ",", "AMD64", ",", langid]);

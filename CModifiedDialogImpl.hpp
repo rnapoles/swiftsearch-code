@@ -198,6 +198,7 @@ public:
 		return ::SendMessage(static_cast<T &>(*this), WM_INVOKE_SYNC, (WPARAM)static_cast<Thunk *>(&thunk), (LPARAM)this);
 	}
 
+#pragma warning(suppress: 4555)
 	BEGIN_MSG_MAP(CInvokeImpl)
 		MESSAGE_HANDLER(WM_INVOKE_SYNC, OnInvokeSync)
 		MESSAGE_HANDLER(WM_INVOKE_ASYNC, OnInvokeAsync)
