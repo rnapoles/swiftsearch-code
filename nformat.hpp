@@ -68,6 +68,8 @@ class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Tra
 			*_S = '\0';
 			return (_Fmt);
 		}
+#pragma warning(push)
+#pragma warning(disable: 4774)
 		_OI do_put(_OI _F, ios_base& _X, _E _Fill, __int64 _V) const
 		{
 			char _Buf[2 * _MAX_INT_DIG], _Fmt[12];
@@ -78,6 +80,7 @@ class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Tra
 			char _Buf[2 * _MAX_INT_DIG], _Fmt[12];
 			return (_Iput(_F, _X, _Fill, _Buf, sprintf(_Buf, _Ifmt(_Fmt, "I64llu", _X.flags()), _V)));
 		}
+#pragma warning(pop)
 		template<class T>
 		_OI put(_OI _F, ios_base& _X, _E _Fill, T const &value) const { return this->do_put(_F, _X, _Fill, value); }
 	};

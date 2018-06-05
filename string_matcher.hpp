@@ -32,3 +32,12 @@ public:
 	bool is_match( char   const str[], size_t const length = ~size_t()) const;
 	bool is_match( char   const str[], size_t const length = ~size_t());
 };
+
+template<class Char> Char totlower(Char const c);
+template<>  char   totlower< char  >( char   const ch);
+template<> wchar_t totlower<wchar_t>(wchar_t const ch);
+template<class Char> Char totupper(Char const c);
+template<> char   totupper< char  >( char   const ch);
+template<> wchar_t totupper<wchar_t>(wchar_t const ch);
+
+template<class Char, Char F(Char const)> struct char_transformer { Char operator()(Char const ch) const { return F(ch); } };

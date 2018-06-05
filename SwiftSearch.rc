@@ -52,16 +52,16 @@ END
 // Dialog
 //
 
-IDD_DIALOG1 DIALOGEX 0, 0, 576, 351
+IDD_DIALOG1 DIALOGEX 0, 0, 604, 352
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CENTER | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
 EXSTYLE WS_EX_APPWINDOW
 MENU IDR_MENU1
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    EDITTEXT        IDC_EDITFILENAME,88,1,387,12,ES_AUTOHSCROLL
-    PUSHBUTTON      "",IDOK,475,0,50,14
-    PUSHBUTTON      "",IDC_BUTTON_BROWSE,525,0,50,14
-    CONTROL         "",IDC_LISTFILES,"SysListView32",LVS_REPORT | LVS_SHOWSELALWAYS | LVS_AUTOARRANGE | LVS_ALIGNLEFT | LVS_OWNERDATA | WS_BORDER | WS_TABSTOP,1,14,574,336
+    EDITTEXT        IDC_EDITFILENAME,88,1,414,12,ES_AUTOHSCROLL
+    PUSHBUTTON      "",IDOK,503,0,50,13
+    PUSHBUTTON      "",IDC_BUTTON_BROWSE,553,0,50,13
+    CONTROL         "",IDC_LISTFILES,"SysListView32",LVS_REPORT | LVS_SHOWSELALWAYS | LVS_AUTOARRANGE | LVS_ALIGNLEFT | LVS_OWNERDATA | WS_BORDER | WS_TABSTOP,1,14,603,336
     COMBOBOX        IDC_LISTVOLUMES,1,1,86,200,CBS_DROPDOWNLIST | CBS_SORT | WS_VSCROLL | WS_TABSTOP
 END
 
@@ -88,9 +88,9 @@ BEGIN
     IDD_DIALOG1, DIALOG
     BEGIN
         LEFTMARGIN, 1
-        RIGHTMARGIN, 575
+        RIGHTMARGIN, 603
         TOPMARGIN, 1
-        BOTTOMMARGIN, 350
+        BOTTOMMARGIN, 351
     END
 
     IDD_DIALOGPROGRESS, DIALOG
@@ -135,6 +135,7 @@ BEGIN
     POPUP "&Help"
     BEGIN
         MENUITEM "&Bugs? Features?",            ID_HELP_BUGS
+        MENUITEM "&Translation",                ID_HELP_TRANSLATION
         MENUITEM "&Donate",                     ID_HELP_DONATE
         MENUITEM SEPARATOR
         MENUITEM "&Copying",                    ID_HELP_COPYING
@@ -182,7 +183,7 @@ END
 STRINGTABLE
 BEGIN
     IDS_SEARCH_PATTERN_TITLE "Search Pattern"
-    IDS_SEARCH_PATTERN_BODY "Entern pattern to match against the file's name or path, such as:"
+    IDS_SEARCH_PATTERN_BODY "Enter a pattern to match against the file's name or path, such as:"
     IDS_SEARCH_PATTERN_BANNER "Search by name or path (hover for help)"
     IDS_SEARCH_VOLUME_BANNER "Search where?"
     IDS_SEARCH_VOLUME_ALL   "(All drives)"
@@ -262,6 +263,11 @@ BEGIN
     IDS_HELP_NTFS_METADATA_TITLE "NTFS Attributes"
     IDS_HELP_NTFS_METADATA_BODY 
                             "Use Ctrl+Enter to show special NTFS files ($MFT, $Extend, etc.) and interesting metadata (::$EA, ::$REPARSE_POINT, etc.)."
+    IDS_TEXT_UI_LOCALE_NAME "UI locale name:"
+    IDS_HELP_TRANSLATION_TITLE "Translation"
+    IDS_HELP_TRANSLATION_BODY 
+                            "Translation files may be found on the project website.\r\nThey are generously provided by other users, not by me.\r\n\r\nWould you like to go to the project website?\r\n\r\nYour detected user interface locale is: %s"
+    IDS_COLUMN_TYPE_HEADER  "Type"
 END
 
 #endif    // English (United States) resources

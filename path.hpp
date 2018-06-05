@@ -119,7 +119,7 @@ BidIt dirname(BidIt const &begin, BidIt const &end)
 }
 
 template<class It>
-inline It fileext(It const begin, It const end)
+inline It fileext(It const begin, It const end)  // WARNING: Does NOT account for file streams! (i.e.  Foo.txt:Bar.bin would return .bin instead of .txt)
 {
 	for (It it = end; it != begin; --it)
 	{

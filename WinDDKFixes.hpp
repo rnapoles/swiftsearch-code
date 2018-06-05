@@ -232,10 +232,14 @@ typedef unsigned __int64 _ULonglong;
 
 namespace std
 {
+	using ::ptrdiff_t;
+	using ::size_t;
 	using ::intptr_t;
 	using ::uintptr_t;
 	using ::memcpy;
 	using ::memset;
+	using ::strlen;
+	using ::wcslen;
 	using ::abort;
 	using ::strerror;
 	using ::ceil;
@@ -251,6 +255,117 @@ namespace std
 
 	template<> class numeric_limits<__int64>;
 	template<> class numeric_limits<unsigned __int64>;
+
+#ifndef _LLONG_MAX
+#define _LLONG_MAX ((long long)(~0ULL >> 1))
+#endif
+	template<> class _CRTIMP2_PURE numeric_limits<long long>
+		: public _Num_int_base
+	{	// limits for type long long
+	public:
+		typedef long long _Ty;
+
+		static _Ty (min)() _THROW0()
+		{	// return minimum value
+			return (-_LLONG_MAX - 1);
+		}
+
+		static _Ty (max)() _THROW0()
+		{	// return maximum value
+			return (_LLONG_MAX);
+		}
+
+		static _Ty epsilon() _THROW0()
+		{	// return smallest effective increment from 1.0
+			return (0);
+		}
+
+		static _Ty round_error() _THROW0()
+		{	// return largest rounding error
+			return (0);
+		}
+
+		static _Ty denorm_min() _THROW0()
+		{	// return minimum denormalized value
+			return (0);
+		}
+
+		static _Ty infinity() _THROW0()
+		{	// return positive infinity
+			return (0);
+		}
+
+		static _Ty quiet_NaN() _THROW0()
+		{	// return non-signaling NaN
+			return (0);
+		}
+
+		static _Ty signaling_NaN() _THROW0()
+		{	// return signaling NaN
+			return (0);
+		}
+
+		_STCONS(bool, is_signed, true);
+		_STCONS(int, digits, CHAR_BIT * sizeof (long long) - 1);
+		_STCONS(int, digits10, (CHAR_BIT * sizeof (long long) - 1)
+			* 301L / 1000);
+	};
+
+#ifndef _ULLONG_MAX
+#define _ULLONG_MAX (~0ULL)
+#endif
+	template<> class _CRTIMP2_PURE numeric_limits<unsigned long long>
+		: public _Num_int_base
+	{	// limits for type unsigned long long
+	public:
+		typedef unsigned long long _Ty;
+
+		static _Ty (min)() _THROW0()
+		{	// return minimum value
+			return (0);
+		}
+
+		static _Ty (max)() _THROW0()
+		{	// return maximum value
+			return (_ULLONG_MAX);
+		}
+
+		static _Ty epsilon() _THROW0()
+		{	// return smallest effective increment from 1.0
+			return (0);
+		}
+
+		static _Ty round_error() _THROW0()
+		{	// return largest rounding error
+			return (0);
+		}
+
+		static _Ty denorm_min() _THROW0()
+		{	// return minimum denormalized value
+			return (0);
+		}
+
+		static _Ty infinity() _THROW0()
+		{	// return positive infinity
+			return (0);
+		}
+
+		static _Ty quiet_NaN() _THROW0()
+		{	// return non-signaling NaN
+			return (0);
+		}
+
+		static _Ty signaling_NaN() _THROW0()
+		{	// return signaling NaN
+			return (0);
+		}
+
+		_STCONS(bool, is_signed, false);
+		_STCONS(int, digits, CHAR_BIT * sizeof (unsigned long long));
+		_STCONS(int, digits10, (CHAR_BIT * sizeof (unsigned long long))
+			* 301L / 1000);
+	};
+#define BOOST_LIMITS  /* don't include this header... our fixes already take care of it */
 
 	template<class T>
 	struct ref_or_void { typedef T &type; };

@@ -13,6 +13,7 @@
 #include <tchar.h>
 #include <time.h>
 
+#ifdef __cplusplus
 #include <algorithm>
 #include <cassert>
 #include <fstream>
@@ -21,6 +22,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#endif
 #pragma warning(pop)
 
 #if defined(__STDC_WANT_SECURE_LIB__) && !__STDC_WANT_SECURE_LIB__
@@ -29,6 +31,7 @@ typedef unsigned short wchar_t;
 #define _WCHAR_T_DEFINED
 #endif
 #if !(defined(_MSC_VER) && _MSC_VER <= 1400)
+#ifdef __cplusplus
 inline int __cdecl sprintf_s(char *buffer, size_t, const char *format, ...) { int r; va_list args; va_start(args, format); r = vsprintf(buffer, format, args); va_end(args); return r; }
 inline int __cdecl swprintf_s(wchar_t *buffer, size_t, const wchar_t *format, ...) { int r; va_list args; va_start(args, format); r = vswprintf(buffer, format, args); va_end(args); return r; }
 inline int __cdecl my_swprintf(wchar_t *buffer, const wchar_t *format, ...) { int r; va_list args; va_start(args, format); r = vswprintf(buffer, format, args); va_end(args); return r; }
@@ -37,6 +40,7 @@ namespace std { using ::my_swprintf; }
 #define swprintf my_swprintf
 #define sprintf_s(buf, size, ...) sprintf(buf, __VA_ARGS__)
 #define swprintf_s(buf, size, ...) swprintf(buf, size, __VA_ARGS__)
+#endif
 #define wcstok_s(tok, delim, ctx) wcstok(tok, delim)
 #define wcstok_s(tok, delim, ctx) wcstok(tok, delim)
 static int __cdecl wcscpy_s(wchar_t *strDestination, size_t numberOfElements, const wchar_t *strSource) { wcscpy(strDestination, strSource); return 0; }
@@ -55,6 +59,7 @@ static int __cdecl wcscpy_s(wchar_t *strDestination, size_t numberOfElements, co
 #endif
 #endif
 
+#ifdef __cplusplus
 namespace std
 {
 	// I don't get why these are necessary??
@@ -64,8 +69,11 @@ namespace std
 	X(long long); X(unsigned long long);
 #undef  X
 }
+#endif
 
+#ifdef __cplusplus
 namespace WTL { using std::min; using std::max; }
+#endif
 
 #ifndef _CPPLIB_VER
 #define __movsb __movsb_
@@ -81,6 +89,7 @@ namespace WTL { using std::min; using std::max; }
 #undef __movsb
 #endif
 
+#ifdef __cplusplus
 #pragma warning(push)
 #pragma warning(disable: 4191)  // 'type cast': unsafe conversion
 #pragma warning(disable: 4265)  // class has virtual functions, but destructor is not virtual
@@ -104,6 +113,7 @@ extern WTL::CAppModule _Module;
 #include <atlctrlx.h>
 #include <atltheme.h>
 #pragma warning(pop)
+#endif
 
 
 #if defined(__STDC_WANT_SECURE_LIB__) && !__STDC_WANT_SECURE_LIB__

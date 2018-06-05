@@ -30,6 +30,9 @@ namespace WTL { using std::min; using std::max; }
 #include <muiload.h>
 #include <ProvExce.h>
 #include <ShlObj.h>
+#ifndef ILIsEmpty
+inline BOOL ILIsEmpty(LPCITEMIDLIST pidl) { return ((pidl == NULL) || (pidl->mkid.cb==0)); }
+#endif
 #include <WinNLS.h>
 
 #include <atlbase.h>
@@ -271,6 +274,7 @@ class SingleMovableGlobalAllocator : public DynamicAllocator
 public:
 	~SingleMovableGlobalAllocator() { if (this->_recycled) { GlobalFree(this->_recycled); this->_recycled = NULL; } }
 	SingleMovableGlobalAllocator() : _recycled() { }
+	bool disown(HGLOBAL const h) { bool const same = h == this->_recycled; if (same) { this->_recycled = NULL; } return same; }
 	void deallocate(pointer const p, size_t const n)
 	{
 		if (n)
@@ -923,6 +927,66 @@ LPTSTR GetAnyErrorText(DWORD errorCode, va_list* pArgList = NULL)
 		{ safe_stprintf(buffer, _T("%#lx"), errorCode); }
 	}
 	return buffer;
+}
+
+int LCIDToLocaleName_XPCompatible(LCID lcid, LPTSTR name, int name_length)
+{
+	HMODULE hKernel32;
+	if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCTSTR>(&GetSystemInfo), &hKernel32))
+	{
+		hKernel32 = NULL;
+	}
+	typedef int WINAPI LCIDToLocaleName_t(LCID Locale, LPTSTR lpName, int cchName, DWORD dwFlags);
+	if (LCIDToLocaleName_t *const LCIDToLocaleName = reinterpret_cast<LCIDToLocaleName_t *>(GetProcAddress(hKernel32, _CRT_STRINGIZE(LCIDToLocaleName))))
+	{
+		name_length = (*LCIDToLocaleName)(lcid, name, name_length, 0);
+		name_length -= !!name_length;
+	}
+	else
+	{
+		ATL::CRegKey key;
+		if (key.Open(HKEY_CLASSES_ROOT, TEXT("MIME\\Database\\Rfc1766"), KEY_QUERY_VALUE) == 0)
+		{
+			TCHAR value_data[64 + MAX_PATH];
+			TCHAR value_name[16];
+			value_name[0] = _T('\0');
+			safe_stprintf(value_name, _T("%04lX"), lcid);
+			unsigned long value_data_length = sizeof(value_data) / sizeof(*value_data);
+			LRESULT const result = key.QueryValue(value_data, value_name, &value_data_length);
+			if (result == 0)
+			{
+				unsigned long i;
+				for (i = 0; i != value_data_length; ++i)
+				{
+					if (value_data[i] == _T(';'))
+					{
+						break;
+					}
+					if (name_length >= 0 && i < static_cast<unsigned long>(name_length))
+					{
+						TCHAR ch = value_data[static_cast<ptrdiff_t>(i)];
+						name[static_cast<ptrdiff_t>(i)] = ch;
+					}
+				}
+				name_length = static_cast<int>(i);
+			}
+			else { name_length = 0; }
+		}
+		else { name_length = 0; }
+	}
+	return name_length;
+}
+WTL::CString LCIDToLocaleName_XPCompatible(LCID lcid)
+{
+	WTL::CString result;
+	LPTSTR const buf = result.GetBufferSetLength(64);
+	int const n = LCIDToLocaleName_XPCompatible(lcid, buf, result.GetLength());
+	result.Delete(n, result.GetLength() - n);
+	return result;
+}
+WTL::CString get_ui_locale_name()
+{
+	return LCIDToLocaleName_XPCompatible(MAKELCID(GetUserDefaultUILanguage(), SORT_DEFAULT));
 }
 
 class Handle
@@ -1884,7 +1948,7 @@ public:
 					case ntfs::AttributeEAInformation:
 					{
 						unsigned long long nonresident_size;
-						bool const sparse = !!(ah->Flags & 0x8000);
+						bool const sparse = false /* BUG: child attributes can have the 'sparse' flag set when base attributes don't, so we get an inconsistency */ && !!(ah->Flags & 0x8000);
 						if (ah->IsNonResident)
 						{
 							if (sparse)
@@ -2223,6 +2287,7 @@ public:
 			: index(index), key(key), state(0), iteration(0)
 		{
 		}
+		unsigned int attributes() { return ptrs.record->stdinfo.attributes(); }
 		bool empty() const { return !this->index; }
 		bool next() { return ++*this, !this->empty(); }
 		value_type const &operator *() const { return this->result; }
@@ -2288,11 +2353,12 @@ public:
 		}
 	};
 
-	size_t get_path(key_type key, std::tvstring &result, bool const name_only) const
+	size_t get_path(key_type key, std::tvstring &result, bool const name_only, unsigned int *attributes = NULL) const
 	{
 		size_t const old_size = result.size();
 		for (ParentIterator pi(this, key); pi.next() && !(name_only && pi.icomponent()); )
 		{
+			if (attributes) { *attributes = pi.attributes(); attributes = NULL; }
 			TCHAR const *const s = static_cast<TCHAR const *>(pi->first);
 			if (name_only || !(pi->second == 1 && (pi->ascii ? *static_cast<char const *>(static_cast<void const *>(s)) : *s) == _T('.')))
 			{
@@ -2349,6 +2415,7 @@ private:
 		{
 			if (frs < me->records_lookup.size())
 			{
+				TCHAR const dirsep = getdirsep();
 				std::tvstring temp;
 				Records::value_type const *const i = me->find(frs);
 				unsigned short ji = 0;
@@ -2357,7 +2424,11 @@ private:
 					size_t const old_basename_index_in_path = basename_index_in_path;
 					basename_index_in_path = path->size();
 					temp.clear();
-					append_directional(temp, &me->names[j->name.offset()], j->name.length, j->name.ascii() ? -1 : 0);
+					append_directional(temp, &dirsep, 1, 0);
+					if (!(match_paths && frs == 0x00000005))
+					{
+						append_directional(temp, &me->names[j->name.offset()], j->name.length, j->name.ascii() ? -1 : 0);
+					}
 					this->operator()(frs, ji, temp.data(), temp.size());
 					basename_index_in_path = old_basename_index_in_path;
 				}
@@ -3094,7 +3165,7 @@ public:
 	{
 		if (this->windowCreateAttempted)
 		{
-			::EnableWindow(parent, TRUE);
+			EnableWindowRecursive(parent, TRUE);
 		}
 		if (this->windowCreated)
 		{
@@ -3142,7 +3213,7 @@ public:
 		{
 			this->windowCreated = !!this->Create(parent);
 			this->windowCreateAttempted = true;
-			::EnableWindow(parent, FALSE);
+			EnableWindowRecursive(parent, FALSE);
 			if (this->windowCreated) { this->refresh_marquee(); }
 			this->Flush();
 		}
@@ -3743,7 +3814,7 @@ unsigned long long get_version(IMAGE_DOS_HEADER const *const image_base)
 class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize<CMainDlg>, public CInvokeImpl<CMainDlg>, private WTL::CMessageFilter
 {
 	enum { IDC_STATUS_BAR = 1100 + 0 };
-	enum { COLUMN_INDEX_NAME, COLUMN_INDEX_PATH, COLUMN_INDEX_SIZE, COLUMN_INDEX_SIZE_ON_DISK, COLUMN_INDEX_CREATION_TIME, COLUMN_INDEX_MODIFICATION_TIME, COLUMN_INDEX_ACCESS_TIME, COLUMN_INDEX_DESCENDENTS };
+	enum { COLUMN_INDEX_NAME, COLUMN_INDEX_PATH, COLUMN_INDEX_TYPE, COLUMN_INDEX_SIZE, COLUMN_INDEX_SIZE_ON_DISK, COLUMN_INDEX_CREATION_TIME, COLUMN_INDEX_MODIFICATION_TIME, COLUMN_INDEX_ACCESS_TIME, COLUMN_INDEX_DESCENDENTS };
 #ifndef LVN_INCREMENTALSEARCH
 	enum
 	{
@@ -3947,7 +4018,8 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 		friend void swap(this_type &a, this_type &b) { return a.swap(b); }
 	};
 
-	typedef std::map<std::tvstring, CacheInfo> IconCache;
+	typedef std::map<std::tvstring, CacheInfo> ShellInfoCache;
+	typedef std::map<std::tvstring, std::tvstring> TypeInfoCache;
 
 	template<class StrCmp>
 	class NameComparator
@@ -3979,7 +4051,8 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	WTL::CRichEditCtrl richEdit;
 	WTL::CStatusBarCtrl statusbar;
 	WTL::CAccelerator accel;
-	IconCache cache;
+	ShellInfoCache cache;
+	mutable TypeInfoCache type_cache /* based on file type ONLY; may be accessed concurrently */; mutable mutex type_cache_mutex; mutable std::tvstring type_cache_str;
 	value_initialized<HANDLE> hRichEdit;
 	value_initialized<bool> autocomplete_called;
 	struct
@@ -4127,7 +4200,7 @@ public:
 			{
 				WTL::CWaitCursor wait(true, IDC_APPSTARTING);
 				std::reverse(path.begin(), path.end());
-				IconCache::iterator const cached = this_->cache.find(path);
+				ShellInfoCache::iterator const cached = this_->cache.find(path);
 				std::reverse(path.begin(), path.end());
 				if (cached != this_->cache.end())
 				{
@@ -4223,7 +4296,7 @@ public:
 	{
 		remove_path_stream_and_trailing_sep(path);
 		std::reverse(path.begin(), path.end());
-		IconCache::const_iterator entry = this->cache.find(path);
+		ShellInfoCache::const_iterator entry = this->cache.find(path);
 		if (entry == this->cache.end())
 		{
 			WTL::CRect rcClient;
@@ -4236,7 +4309,7 @@ public:
 			}
 			if (current_cache_size >= 2 * max_cache_size)
 			{
-				for (IconCache::iterator i = this->cache.begin(); i != this->cache.end(); )
+				for (ShellInfoCache::iterator i = this->cache.begin(); i != this->cache.end(); )
 				{
 					if (i->second.counter + max_cache_size < current_cache_size)
 					{
@@ -4248,12 +4321,12 @@ public:
 						++i;
 					}
 				}
-				for (IconCache::iterator i = this->cache.begin(); i != this->cache.end(); ++i)
+				for (ShellInfoCache::iterator i = this->cache.begin(); i != this->cache.end(); ++i)
 				{
 					assert(i->second.counter < this->cache.size());
 				}
 			}
-			entry = this->cache.insert(this->cache.end(), IconCache::value_type(path, CacheInfo(this->cache.size())));
+			entry = this->cache.insert(this->cache.end(), ShellInfoCache::value_type(path, CacheInfo(this->cache.size())));
 		}
 
 		std::reverse(path.begin(), path.end());
@@ -4303,7 +4376,7 @@ public:
 		_Module.GetMessageLoop()->AddMessageFilter(this);
 
 		this->SetWindowText(this->LoadString(IDS_APPNAME));
-		this->menu.Attach(this->GetMenu());
+		this->menu.LoadMenu(IDR_MENU1);
 		this->lvFiles.Attach(this->GetDlgItem(IDC_LISTFILES));
 		this->btnBrowse.Attach(this->GetDlgItem(IDC_BUTTON_BROWSE));
 		this->btnBrowse.SetWindowText(this->LoadString(IDS_BUTTON_BROWSE));
@@ -4318,7 +4391,8 @@ public:
 		this->txtPattern.SetCueBannerText(this->LoadString(IDS_SEARCH_PATTERN_BANNER), true);
 		WTL::CHeaderCtrl hdr = this->lvFiles.GetHeader();
 		{ int const icol = COLUMN_INDEX_NAME             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT , 192, this->LoadString(IDS_COLUMN_NAME_HEADER         )}; this->lvFiles.InsertColumn(icol, &column); }
-		{ int const icol = COLUMN_INDEX_PATH             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT , 330, this->LoadString(IDS_COLUMN_PATH_HEADER         )}; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_PATH             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT , 265, this->LoadString(IDS_COLUMN_PATH_HEADER         )}; this->lvFiles.InsertColumn(icol, &column); }
+		{ int const icol = COLUMN_INDEX_TYPE             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  80, this->LoadString(IDS_COLUMN_TYPE_HEADER         )}; this->lvFiles.InsertColumn(icol, &column); }
 		{ int const icol = COLUMN_INDEX_SIZE             ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT, 115, this->LoadString(IDS_COLUMN_SIZE_HEADER         )}; this->lvFiles.InsertColumn(icol, &column); }
 		{ int const icol = COLUMN_INDEX_SIZE_ON_DISK     ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_RIGHT, 115, this->LoadString(IDS_COLUMN_SIZE_ON_DISK_HEADER )}; this->lvFiles.InsertColumn(icol, &column); }
 		{ int const icol = COLUMN_INDEX_CREATION_TIME    ; LVCOLUMN column = { LVCF_FMT | LVCF_WIDTH | LVCF_TEXT, LVCFMT_LEFT ,  86, this->LoadString(IDS_COLUMN_CREATION_TIME_HEADER)}; this->lvFiles.InsertColumn(icol, &column); }
@@ -4350,11 +4424,9 @@ public:
 				this->txtPattern.SetFont(WTL::CFontHandle().CreateFontIndirect(&logFont));
 			}
 		}
-		this->lvFiles.SetExtendedListViewStyle(LVS_EX_DOUBLEBUFFER | LVS_EX_FULLROWSELECT | LVS_EX_LABELTIP | LVS_EX_GRIDLINES | LVS_EX_HEADERDRAGDROP | 0x80000000 /*LVS_EX_COLUMNOVERFLOW*/);
+		this->lvFiles.SetExtendedListViewStyle(LVS_EX_DOUBLEBUFFER | LVS_EX_FULLROWSELECT | LVS_EX_LABELTIP | (this->menu.GetMenuState(ID_VIEW_GRIDLINES, MF_BYCOMMAND) ? LVS_EX_GRIDLINES : 0) | LVS_EX_HEADERDRAGDROP | 0x80000000 /*LVS_EX_COLUMNOVERFLOW*/);
 		{
-			MENUITEMINFO mii = { sizeof(mii), MIIM_STATE };
-			this->menu.GetMenuItemInfo(ID_VIEW_LARGEICONS, FALSE, &mii);
-			this->small_image_list((mii.fState & MFS_CHECKED) ? this->imgListLarge : this->imgListSmall);
+			this->small_image_list((this->menu.GetMenuState(ID_VIEW_LARGEICONS, MF_BYCOMMAND) & MFS_CHECKED) ? this->imgListLarge : this->imgListSmall);
 			this->lvFiles.SetImageList(this->imgListLarge, LVSIL_NORMAL);
 			this->lvFiles.SetImageList(this->imgListExtraLarge, LVSIL_NORMAL);
 		}
@@ -4442,7 +4514,7 @@ public:
 		CProgressDialog *dlg;
 		unsigned long long denominator;
 		unsigned long long numerator;
-		std::tvstring buffer;
+		std::tvstring buffer, buffer2;
 		void check_cancelled(SearchResult const *const a = NULL, SearchResult const *const b = NULL)
 		{
 			++numerator;
@@ -4560,8 +4632,9 @@ public:
 				{
 				case COLUMN_INDEX_NAME:
 				case COLUMN_INDEX_PATH:
+				case COLUMN_INDEX_TYPE:
 				{
-					bool const name_only = SubItem == COLUMN_INDEX_NAME;
+					bool const name_only = SubItem != COLUMN_INDEX_PATH, is_type = SubItem == COLUMN_INDEX_TYPE;
 					int c; c = 0;
 					if (!name_only)
 					{
@@ -4619,23 +4692,40 @@ public:
 							n1 = USHRT_MAX;
 							n2 = USHRT_MAX;
 						}
-						size_t itemp = 0;
-						base->temp->resize((1 + USHRT_MAX) * 2);
-						while (i1.icomponent() != n1 && i1.next() && !(name_only && i1.icomponent()))
+						if (is_type)
 						{
-							(*base->temp)[itemp++] = *i1;
+							base->buffer2.clear();
+							size_t const k0 = 0;
+							base->buffer2 += index1->root_path();
+							i1.next(); append_directional(base->buffer2, static_cast<TCHAR const *>(i1->first), i1->second, i1->ascii ? -1 : 0, false);
+							size_t const k1 = k0 + base->this_->get_file_type_blocking(base->buffer2, k0, i1.attributes());
+							base->buffer2 += index2->root_path();
+							i2.next(); append_directional(base->buffer2, static_cast<TCHAR const *>(i2->first), i2->second, i2->ascii ? -1 : 0, false);
+							size_t const k2 = k1 + base->this_->get_file_type_blocking(base->buffer2, k1, i2.attributes());
+							less = std::lexicographical_compare(
+								base->buffer2.begin() + static_cast<ptrdiff_t>(k0), base->buffer2.begin() + static_cast<ptrdiff_t>(k1),
+								base->buffer2.begin() + static_cast<ptrdiff_t>(k1), base->buffer2.begin() + static_cast<ptrdiff_t>(k2));
 						}
-						size_t const len1 = itemp;
-						while (i2.icomponent() != n2 && i2.next() && !(name_only && i2.icomponent()))
+						else
 						{
-							(*base->temp)[itemp++] = *i2;
+							size_t itemp = 0;
+							base->temp->resize((1 + USHRT_MAX) * 2);
+							while (i1.icomponent() != n1 && i1.next() && !(name_only && i1.icomponent()))
+							{
+								(*base->temp)[itemp++] = *i1;
+							}
+							size_t const len1 = itemp;
+							while (i2.icomponent() != n2 && i2.next() && !(name_only && i2.icomponent()))
+							{
+								(*base->temp)[itemp++] = *i2;
+							}
+							// Here we rely on the path structure, assuming that components are broken down on well-defined boundaries.
+							// This would NOT work with arbitrary substrings.
+							less = std::lexicographical_compare(
+								base->temp->rend() - static_cast<ptrdiff_t>(len1), base->temp->rend(),
+								base->temp->rend() - static_cast<ptrdiff_t>(itemp), base->temp->rend() - static_cast<ptrdiff_t>(len1),
+								Index::ParentIterator::value_type_compare());
 						}
-						// Here we rely on the path structure, assuming that components are broken down on well-defined boundaries.
-						// This would NOT work with arbitrary substrings.
-						less = std::lexicographical_compare(
-							base->temp->rend() - static_cast<ptrdiff_t>(len1), base->temp->rend(),
-							base->temp->rend() - static_cast<ptrdiff_t>(itemp), base->temp->rend() - static_cast<ptrdiff_t>(len1),
-							Index::ParentIterator::value_type_compare());
 					}
 					break;
 				}
@@ -4684,11 +4774,13 @@ public:
 					clock_t const tstart = clock();
 					int proposed_sort = 0;
 					bool pretend_reversed;
+					CSetRedraw const redraw(this->lvFiles, FALSE);
 					switch (subitem)
 					{
 #define X(Column) case Column: { pretend_reversed = !reversed; proposed_sort = pretend_reversed ? +1 : -1; ResultCompare<Column> comp(&compare); if (is_sorted_ex(begin, end, comp, pretend_reversed)) { std::reverse(begin, end); } else { std::stable_sort(begin, end, comp); if (!pretend_reversed) { std::reverse(begin, end); } } } break
 						X(COLUMN_INDEX_NAME);
 						X(COLUMN_INDEX_PATH);
+						X(COLUMN_INDEX_TYPE);
 #undef  X
 #define X(Column) case Column: { pretend_reversed =  reversed; proposed_sort = pretend_reversed ? +1 : -1; ResultCompare<Column> comp(&compare); if (is_sorted_ex(begin, end, comp, pretend_reversed)) { std::reverse(begin, end); } else { stable_sort_by_key(begin, end, comp, compare.swapper()); if (!pretend_reversed) { std::reverse(begin, end); } } } break
 						X(COLUMN_INDEX_SIZE);
@@ -4764,6 +4856,11 @@ public:
 		{
 			this->cache.clear();
 			this->cached_column_header_widths.clear();
+			{
+				lock_guard<mutex> const lock(this->type_cache_mutex);
+				this->type_cache.clear();
+				this->type_cache_str.clear();
+			}
 		}
 	}
 
@@ -4786,7 +4883,13 @@ public:
 		if (is_regex) { pattern.erase(pattern.begin()); }
 		bool const is_path_pattern = is_regex || ~pattern.find(_T('\\')) || ~pattern.find(_T("**"));
 		bool const is_stream_pattern = is_regex || ~pattern.find(_T(':'));
-		bool const requires_root_path_match = is_path_pattern && !pattern.empty() && !is_regex && *pattern.begin() != _T('*') && *pattern.begin() != _T('?');
+		bool const requires_root_path_match = is_path_pattern && !is_regex && pattern.size() >= 2 && *(pattern.begin() + 0) != _T('*') && *(pattern.begin() + 0) != _T('?') && *(pattern.begin() + 1) != _T('*') && *(pattern.begin() + 1) != _T('?');
+		std::tvstring root_path_optimized_away;
+		if (requires_root_path_match)
+		{
+			root_path_optimized_away.insert(root_path_optimized_away.end(), pattern.begin(), std::find(pattern.begin(), pattern.end(), _T('\\')));
+			pattern.erase(pattern.begin(), pattern.begin() + static_cast<ptrdiff_t>(root_path_optimized_away.size()));
+		}
 		if (!is_path_pattern && !~pattern.find(_T('*')) && !~pattern.find(_T('?'))) { pattern.insert(pattern.begin(), _T('*')); pattern.insert(pattern.begin(), _T('*')); pattern.insert(pattern.end(), _T('*')); pattern.insert(pattern.end(), _T('*')); }
 		string_matcher matcher;
 		try
@@ -4837,7 +4940,9 @@ public:
 				if (selected == ii || selected == 0)
 				{
 					std::tvstring const root_path = p->root_path();
-					if (!requires_root_path_match || pattern.size() >= root_path.size() && std::equal(root_path.begin(), root_path.end(), pattern.begin()))
+					if (!requires_root_path_match ||
+						root_path.size() >= root_path_optimized_away.size() &&
+						std::equal(root_path.begin(), root_path.begin() + static_cast<ptrdiff_t>(root_path_optimized_away.size()), root_path_optimized_away.begin()))
 					{
 						wait = true;
 						wait_handles.push_back(p->finished_event());
@@ -4955,7 +5060,7 @@ public:
 					size_t current_progress_numerator = 0;
 					size_t const current_progress_denominator = i->total_names_and_streams();
 					std::tvstring root_path = i->root_path();
-					std::tvstring current_path = root_path;
+					std::tvstring current_path = root_path_optimized_away.empty() ? root_path : std::tvstring();
 					while (!current_path.empty() && *(current_path.end() - 1) == _T('\\')) { current_path.erase(current_path.end() - 1); }
 					try
 					{
@@ -5224,6 +5329,7 @@ public:
 	{
 		LockedResults locked_results(*this);
 		std::for_each(indices.begin(), indices.end(), locked_results);
+		ATL::CComPtr<IShellFolder> desktop;
 		HRESULT volatile hr = S_OK;
 		UINT const minID = 1000;
 		WTL::CMenu menu;
@@ -5235,7 +5341,6 @@ public:
 		if (indices.size() <= (1 << 10))  // if not too many files... otherwise the shell context menu this will take a long time
 		{
 			SFGAOF sfgao = 0;
-			std::tvstring common_ancestor_path;
 			std::tvstring path;
 			for (size_t i = 0; i < indices.size(); ++i)
 			{
@@ -5246,42 +5351,29 @@ public:
 				{
 					remove_path_stream_and_trailing_sep(path);
 				}
-				if (i == 0)
-				{
-					common_ancestor_path = path;
-				}
 				CShellItemIDList itemIdList;
-				if (SHParseDisplayName(path.c_str(), NULL, &itemIdList, sfgao, &sfgao) == S_OK)
+				hr = SHParseDisplayName(path.c_str(), NULL, &itemIdList, sfgao, &sfgao);
+				if (hr == S_OK)
 				{
+					if (p->first.first.IsNull())
+					{
+						p->first.first.Attach(ILClone(itemIdList));
+						ILRemoveLastID(p->first.first);
+					}
+					while (!ILIsEmpty(static_cast<LPCITEMIDLIST>(p->first.first)) && !ILIsParent(p->first.first, itemIdList, FALSE))
+					{
+						ILRemoveLastID(p->first.first);
+					}
 					p->second.push_back(CShellItemIDList());
 					p->second.back().Attach(itemIdList.Detach());
-					if (i != 0)
-					{
-						common_ancestor_path = path;
-						size_t j;
-						for (j = 0; j < (path.size() < common_ancestor_path.size() ? path.size() : common_ancestor_path.size()); j++)
-						{
-							if (path[j] != common_ancestor_path[j])
-							{
-								break;
-							}
-						}
-						common_ancestor_path.erase(common_ancestor_path.begin() + static_cast<ptrdiff_t>(j), common_ancestor_path.end());
-					}
 				}
 			}
-			common_ancestor_path.erase(dirname(common_ancestor_path.begin(), common_ancestor_path.end()), common_ancestor_path.end());
 			if (hr == S_OK)
 			{
-				hr = SHParseDisplayName(common_ancestor_path.c_str(), NULL, &p->first.first, sfgao, &sfgao);
-			}
-			if (hr == S_OK)
-			{
-				ATL::CComPtr<IShellFolder> desktop;
 				hr = SHGetDesktopFolder(&desktop);
 				if (hr == S_OK)
 				{
-					if (p->first.first.m_pidl->mkid.cb)
+					if (!p->first.first.IsNull() && !ILIsEmpty(static_cast<LPCITEMIDLIST>(p->first.first)))
 					{
 						hr = desktop->BindToObject(p->first.first, NULL, IID_IShellFolder, reinterpret_cast<void **>(&p->first.second));
 					}
@@ -5293,12 +5385,13 @@ public:
 			}
 			if (hr == S_OK)
 			{
+				bool const desktop_relative = p->first.first.IsNull() || ILIsEmpty(static_cast<LPCITEMIDLIST>(p->first.first));
 				std::vector<LPCITEMIDLIST> relative_item_ids(p->second.size());
 				for (size_t i = 0; i < p->second.size(); ++i)
 				{
-					relative_item_ids[i] = ILFindChild(p->first.first, p->second[i]);
+					relative_item_ids[i] = desktop_relative ? static_cast<LPCITEMIDLIST>(p->second[i]) : ILFindChild(p->first.first, p->second[i]);
 				}
-				hr = p->first.second->GetUIObjectOf(
+				hr = (desktop_relative ? desktop : p->first.second)->GetUIObjectOf(
 					*this,
 					static_cast<UINT>(relative_item_ids.size()),
 					relative_item_ids.empty() ? NULL : &relative_item_ids[0],
@@ -5452,6 +5545,8 @@ public:
 				{
 					line_buffer.reserve(locked_indices.size() * MAX_PATH * (single_column >= 0 ? 2 : 3) / 4);
 				}
+				std::vector<int> displayed_columns(ncolumns, -1);
+				this->lvFiles.GetColumnOrderArray(static_cast<int>(displayed_columns.size()), &*displayed_columns.begin());
 				unsigned long long nwritten_since_update = 0;
 				unsigned long prev_update_time = GetTickCount();
 				try
@@ -5460,8 +5555,9 @@ public:
 					{
 						bool should_flush = i + 1 >= locked_indices.size();
 						bool any = false;
-						for (int j = single_column >= 0 ? single_column : 0; j < (single_column >= 0 ? single_column + 1 : ncolumns); ++j)
+						for (int c = 0; c < (single_column >= 0 ? 1 : ncolumns); ++c)
 						{
+							int const j = single_column >= 0 ? single_column : displayed_columns[c];
 							if (j == COLUMN_INDEX_NAME) { continue; }
 							if (any) { line_buffer.push_back(tabsep ? _T('\t') : _T(',')); }
 							size_t const begin_offset = line_buffer.size();
@@ -5554,9 +5650,13 @@ public:
 						unsigned int const format = shell_file_list ? CF_HDROP : sizeof(*line_buffer.data()) > sizeof(char) ? CF_UNICODETEXT : CF_TEXT;
 						if (HGLOBAL const resized = GlobalReAlloc(GlobalHandle(line_buffer.c_str()), (line_buffer.size() + 1) * sizeof(*line_buffer.data()), 0))
 						{
-							SetClipboardData(format, resized);
+							HANDLE const result = SetClipboardData(format, resized);
 							// Clear the string, because we put it in an invalid state -- the underlying buffer is too small now!
 							std::tvstring(line_buffer.get_allocator()).swap(line_buffer);
+							if (result == resized)
+							{
+								global_alloc.disown(result);
+							}
 						}
 					}
 				}
@@ -5585,7 +5685,7 @@ public:
 			hr = SHGetDesktopFolder(&desktop);
 			if (hr == S_OK)
 			{
-				if (p->first.first.m_pidl->mkid.cb)
+				if (!ILIsEmpty(static_cast<LPCITEMIDLIST>(p->first.first)))
 				{
 					hr = desktop->BindToObject(p->first.first, NULL, IID_IShellFolder, reinterpret_cast<void **>(&p->first.second));
 				}
@@ -5671,6 +5771,57 @@ public:
 		return 0;
 	}
 
+	size_t get_file_type_blocking(std::tvstring &name, size_t const name_offset, unsigned int const file_attributes) const  // TODO: should be 'volatile'
+	{
+		size_t result = 0;
+		while (name.size() > name_offset && hasdirsep(name)) { name.erase(name.end() - 1); }
+		lock_guard<mutex> const lock(this->type_cache_mutex);
+		this->type_cache_str.assign(name.begin() + static_cast<ptrdiff_t>(name_offset), basename(name.begin() + static_cast<ptrdiff_t>(name_offset), name.end()));
+		size_t ext_offset, ext_length;
+		if (file_attributes & FILE_ATTRIBUTE_DIRECTORY)
+		{
+			ext_offset = name.size() - (!name.empty() && *(name.end() - 1) == _T('.'));
+			ext_length = name.size() - static_cast<ptrdiff_t>(ext_offset);
+		}
+		else
+		{
+			// TODO: Name should not include alternate data stream...
+			size_t const name_end = static_cast<size_t>(std::find(basename(name.begin(), name.end()), name.end(), _T(':')) - name.begin());
+			ext_offset = fileext(name.begin() + static_cast<ptrdiff_t>(name_offset), name.begin() + static_cast<ptrdiff_t>(name_end)) - name.begin();
+			ext_length = name_end - ext_offset;
+		}
+		if (ext_offset == name.size()) { this->type_cache_str.append(_T("*")); }
+		this->type_cache_str.append(name.data() + static_cast<ptrdiff_t>(ext_offset), ext_length);
+		if (!this->type_cache_str.empty() && *(this->type_cache_str.end() - 1) == _T('.') && (this->type_cache_str.size() <= 1 || isdirsep(*(this->type_cache_str.end() - 2))))
+		{
+			this->type_cache_str.erase(this->type_cache_str.end() - 1, this->type_cache_str.end());
+		}
+		name.erase(name.begin() + static_cast<ptrdiff_t>(name_offset), name.end());
+		if (!this->type_cache_str.empty())
+		{
+			unsigned int const usable_attributes = file_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_DEVICE | FILE_ATTRIBUTE_REPARSE_POINT) /* restrict this to prevent redundant storage */;
+			// HACK: Encode the file attributes into the name, after a null terminator
+			size_t const type_cache_str_length = this->type_cache_str.size();
+			this->type_cache_str.push_back(_T('\0'));
+			this->type_cache_str.insert(this->type_cache_str.end(), reinterpret_cast<TCHAR const *>(&usable_attributes), sizeof(usable_attributes) / sizeof(TCHAR));
+			std::transform(this->type_cache_str.begin(), this->type_cache_str.begin() + static_cast<ptrdiff_t>(type_cache_str_length), this->type_cache_str.begin(), char_transformer<TCHAR, totupper<TCHAR> >());
+			if (usable_attributes & FILE_ATTRIBUTE_DIRECTORY) { adddirsep(this->type_cache_str); }
+			TypeInfoCache::value_type::second_type &found = this->type_cache[this->type_cache_str];
+			if (found.empty() && !this->type_cache_str.empty())
+			{
+				SHFILEINFO shfi;
+				if (SHGetFileInfo(this->type_cache_str.c_str(), usable_attributes, &shfi, sizeof(shfi), SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES))
+				{
+					found.append(shfi.szTypeName);
+				}
+			}
+			name += found;
+			result = found.size();
+		}
+		this->type_cache_str.clear();
+		return result;
+	}
+
 	void GetSubItemText(size_t const j, int const subitem, bool const for_ui, std::tvstring &text, bool const lock_index = true) const
 	{
 		typedef std::tvstring::iterator TextIt;
@@ -5688,6 +5839,7 @@ public:
 		{
 		case COLUMN_INDEX_NAME             : i->get_path(key, text, true); deldirsep(text); break;
 		case COLUMN_INDEX_PATH             : text += i->root_path(); i->get_path(key, text, false); break;
+		case COLUMN_INDEX_TYPE             : { size_t const k = text.size(); text += i->root_path(); unsigned int attributes = 0; i->get_path(key, text, true, &attributes); this->get_file_type_blocking(text, k, attributes); } break;
 		case COLUMN_INDEX_SIZE             : uvalue = static_cast<unsigned long long>(i->get_sizes(key).length   ); text += nformat(uvalue); break;
 		case COLUMN_INDEX_SIZE_ON_DISK     : uvalue = static_cast<unsigned long long>(i->get_sizes(key).allocated); text += nformat(uvalue); break;
 		case COLUMN_INDEX_CREATION_TIME    : svalue = i->get_stdinfo(frs).created ; SystemTimeToString(svalue, text, !for_ui); break;
@@ -5822,7 +5974,7 @@ public:
 				result = CDRF_NOTIFYSUBITEMDRAW;
 				break;
 			case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
-				if (false && pLV->nmcd.dwItemSpec % 2) { unsigned char const v = 0xF8; pLV->clrTextBk = RGB(v, v, v); }
+				if (pLV->nmcd.dwItemSpec % 2 && false) { unsigned char const v = 0xF8; pLV->clrTextBk = RGB(v, v, v); }
 				if ((this->small_image_list() == this->imgListLarge || this->small_image_list() == this->imgListExtraLarge) && pLV->iSubItem == 1)
 				{ result = 0x8 /*CDRF_DOERASE*/ | CDRF_NOTIFYPOSTPAINT; }
 				else
@@ -6045,6 +6197,7 @@ public:
 		switch (nID)
 		{
 		case ID_HELP_DONATE: body.Format(this->LoadString(IDS_HELP_DONATE_BODY), this->get_project_url(IDS_PROJECT_USER_FRIENDLY_URL)); title = this->LoadString(IDS_HELP_DONATE_TITLE); type = (type & ~static_cast<unsigned int>(MB_OK) | MB_OKCANCEL); break;
+		case ID_HELP_TRANSLATION: body.Format(this->LoadString(IDS_HELP_TRANSLATION_BODY), static_cast<LPCTSTR>(get_ui_locale_name())); title = this->LoadString(IDS_HELP_TRANSLATION_TITLE); type = (type & ~static_cast<unsigned int>(MB_OK) | MB_OKCANCEL); break;
 		case ID_HELP_COPYING: body = this->LoadString(IDS_HELP_COPYING_BODY); title = this->LoadString(IDS_HELP_COPYING_TITLE); break;
 		case ID_HELP_NTFSMETADATA: body = this->LoadString(IDS_HELP_NTFS_METADATA_BODY); title = this->LoadString(IDS_HELP_NTFS_METADATA_TITLE); break;
 		case ID_HELP_SEARCHINGBYDEPTH: body = this->LoadString(IDS_HELP_SEARCHING_BY_DEPTH_BODY); title = this->LoadString(IDS_HELP_SEARCHING_BY_DEPTH_TITLE); break;
@@ -6057,7 +6210,10 @@ public:
 			int const r = this->MessageBox(static_cast<LPCTSTR>(body), static_cast<LPCTSTR>(title), type);
 			switch (nID)
 			{
-			case ID_HELP_DONATE: if (r == IDOK) { this->open_project_page(); } break;
+			case ID_HELP_DONATE:
+			case ID_HELP_TRANSLATION:
+				if (r == IDOK) { this->open_project_page(); }
+				break;
 			default: break;
 			}
 		}
@@ -6066,20 +6222,30 @@ public:
 	void OnHelpBugs(UINT /*uNotifyCode*/, int /*nID*/, CWindow /*wndCtl*/)
 	{
 		long long const ticks = get_version(&__ImageBase);
-		std::tvstring buf_localized, buf_invariant;
 		RefCountedCString body;
-		SystemTimeToString(ticks, buf_localized, false, false);
-		SystemTimeToString(ticks, buf_invariant, true, false);
 		body.Format(this->LoadString(IDS_TEXT_REPORT_ISSUES), this->get_project_url(IDS_PROJECT_USER_FRIENDLY_URL));
-		body += _T("\x2022");
-		body += this->LoadString(IDS_TEXT_SPACE);
-		body += this->LoadString(IDS_TEXT_BUILD_DATE);
-		body += this->LoadString(IDS_TEXT_SPACE);
-		body += buf_localized.c_str();
-		body += this->LoadString(IDS_TEXT_SPACE);
-		body += this->LoadString(IDS_TEXT_PAREN_OPEN);
-		body += buf_invariant.c_str();
-		body += this->LoadString(IDS_TEXT_PAREN_CLOSE);
+		{
+			body += _T("\x2022");
+			body += this->LoadString(IDS_TEXT_SPACE);
+			body += this->LoadString(IDS_TEXT_UI_LOCALE_NAME);
+			body += this->LoadString(IDS_TEXT_SPACE);
+			body += get_ui_locale_name();
+		}
+		body += _T("\r\n");
+		{
+			std::tvstring buf_localized, buf_invariant;
+			SystemTimeToString(ticks, buf_localized, false, false);
+			SystemTimeToString(ticks, buf_invariant, true, false);
+			body += _T("\x2022");
+			body += this->LoadString(IDS_TEXT_SPACE);
+			body += this->LoadString(IDS_TEXT_BUILD_DATE);
+			body += this->LoadString(IDS_TEXT_SPACE);
+			body += buf_localized.c_str();
+			body += this->LoadString(IDS_TEXT_SPACE);
+			body += this->LoadString(IDS_TEXT_PAREN_OPEN);
+			body += buf_invariant.c_str();
+			body += this->LoadString(IDS_TEXT_PAREN_CLOSE);
+		}
 		if (this->MessageBox(body, this->LoadString(IDS_HELP_BUGS_TITLE), MB_OKCANCEL | MB_ICONINFORMATION) == IDOK)
 		{
 			this->open_project_page();
@@ -6121,7 +6287,7 @@ public:
 		{
 			RECT rect;
 			wndListView.GetClientRect(&rect);
-			int const client_width = (std::max)(1, (int) (rect.right - rect.left) - GetSystemMetrics(SM_CXVSCROLL) - 2);
+			int const client_width = (std::max)(1, (int) (rect.right - rect.left) - ((this->lvFiles.GetWindowLong(GWL_STYLE) & WS_VSCROLL) ? 0 : GetSystemMetrics(SM_CXVSCROLL)) - 1);
 
 			WTL::CHeaderCtrl wndListViewHeader = wndListView.GetHeader();
 			int oldTotalColumnsWidth;
@@ -6226,6 +6392,7 @@ public:
 		MESSAGE_HANDLER_EX(WM_CONTEXTMENU, OnContextMenu)
 		COMMAND_ID_HANDLER_EX(ID_HELP_BUGS, OnHelpBugs)
 		COMMAND_ID_HANDLER_EX(ID_HELP_DONATE, OnHelp)
+		COMMAND_ID_HANDLER_EX(ID_HELP_TRANSLATION, OnHelp)
 		COMMAND_ID_HANDLER_EX(ID_HELP_COPYING, OnHelp)
 		COMMAND_ID_HANDLER_EX(ID_HELP_NTFSMETADATA, OnHelp)
 		COMMAND_ID_HANDLER_EX(ID_HELP_SEARCHINGBYDEPTH, OnHelp)
@@ -6261,61 +6428,6 @@ public:
 	enum { IDD = IDD_DIALOG1 };
 };
 unsigned int const CMainDlg::WM_TASKBARCREATED = RegisterWindowMessage(_T("TaskbarCreated"));
-
-int LCIDToLocaleName_XPCompatible(LCID lcid, LPTSTR name, int name_length)
-{
-	HMODULE hKernel32;
-	if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCTSTR>(&GetSystemInfo), &hKernel32))
-	{
-		hKernel32 = NULL;
-	}
-	typedef int WINAPI LCIDToLocaleName_t(LCID Locale, LPTSTR lpName, int cchName, DWORD dwFlags);
-	if (LCIDToLocaleName_t *const LCIDToLocaleName = reinterpret_cast<LCIDToLocaleName_t *>(GetProcAddress(hKernel32, _CRT_STRINGIZE(LCIDToLocaleName))))
-	{
-		name_length = (*LCIDToLocaleName)(lcid, name, name_length, 0);
-	}
-	else
-	{
-		ATL::CRegKey key;
-		if (key.Open(HKEY_CLASSES_ROOT, TEXT("MIME\\Database\\Rfc1766"), KEY_QUERY_VALUE) == 0)
-		{
-			TCHAR value_data[64 + MAX_PATH];
-			TCHAR value_name[16];
-			value_name[0] = _T('\0');
-			safe_stprintf(value_name, _T("%04lX"), lcid);
-			unsigned long value_data_length = sizeof(value_data) / sizeof(*value_data);
-			LRESULT const result = key.QueryValue(value_data, value_name, &value_data_length);
-			if (result == 0)
-			{
-				unsigned long i;
-				for (i = 0; i != value_data_length; ++i)
-				{
-					if (value_data[i] == _T(';'))
-					{
-						break;
-					}
-					if (name_length >= 0 && i < static_cast<unsigned long>(name_length))
-					{
-						TCHAR ch = value_data[static_cast<ptrdiff_t>(i)];
-						name[static_cast<ptrdiff_t>(i)] = ch;
-					}
-				}
-				name_length = static_cast<int>(i);
-			}
-			else { name_length = 0; }
-		}
-		else { name_length = 0; }
-	}
-	return name_length;
-}
-WTL::CString LCIDToLocaleName_XPCompatible(LCID lcid)
-{
-	WTL::CString result;
-	LPTSTR const buf = result.GetBufferSetLength(64);
-	int const n = LCIDToLocaleName_XPCompatible(lcid, buf, result.GetLength());
-	result.Delete(n, result.GetLength() - n);
-	return result;
-}
 
 HMODULE mui_module = NULL;
 WTL::CAppModule _Module;
@@ -6481,11 +6593,13 @@ int _tmain(int argc, TCHAR* argv[])
 				}
 				std::tstring const period = TEXT(".");
 				std::tstring const mui_ext = TEXT("mui");
-				std::tstring const locale_name = static_cast<LPCTSTR>(LCIDToLocaleName_XPCompatible(MAKELCID(GetUserDefaultUILanguage(), SORT_DEFAULT)));
+				std::tstring const locale_name = static_cast<LPCTSTR>(get_ui_locale_name());
 				std::tstring const mui_paths [] =
 				{
-					module_directory + getdirsep() + module_name + period + locale_name + period + mui_ext,
-					module_directory + locale_name + getdirsep() + module_name + period + mui_ext
+					module_directory + locale_name + getdirsep() + module_name + period + mui_ext,
+					module_directory + module_name + period + locale_name + period + mui_ext,
+					module_directory + locale_name + getdirsep() + module_name + period + locale_name + period + mui_ext,
+					module_directory + module_name + period + mui_ext,
 				};
 				for (size_t i = 0; i != sizeof(mui_paths) / sizeof(*mui_paths) && !mui_module; ++i)
 				{

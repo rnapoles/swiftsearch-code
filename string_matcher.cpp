@@ -69,12 +69,10 @@ public:
 	}
 };
 
-template<class Char> inline Char totlower(Char const c);
-template<> inline  char   totlower< char  >( char   const ch) { return ch <= SCHAR_MAX ?  'A' <= ch && ch <=  'Z' ? static_cast< char  >(ch ^ 0x20) : ch : static_cast< char  >(::tolower (ch)); }
-template<> inline wchar_t totlower<wchar_t>(wchar_t const ch) { return ch <= SCHAR_MAX ? L'A' <= ch && ch <= L'Z' ? static_cast<wchar_t>(ch ^ 0x20) : ch : static_cast<wchar_t>(::towlower(ch)); }
-template<class Char> inline Char totupper(Char const c);
-template<> inline  char   totupper< char  >( char   const ch) { return ch <= SCHAR_MAX ?  'a' <= ch && ch <=  'z' ? static_cast< char  >(ch ^ 0x20) : ch : static_cast< char  >(::tolower (ch)); }
-template<> inline wchar_t totupper<wchar_t>(wchar_t const ch) { return ch <= SCHAR_MAX ? L'a' <= ch && ch <= L'z' ? static_cast<wchar_t>(ch ^ 0x20) : ch : static_cast<wchar_t>(::towlower(ch)); }
+template<>  char   totlower< char  >( char   const ch) { return ch <= SCHAR_MAX ?  'A' <= ch && ch <=  'Z' ? static_cast< char  >(ch ^ 0x20) : ch : static_cast< char  >(::tolower (ch)); }
+template<> wchar_t totlower<wchar_t>(wchar_t const ch) { return ch <= SCHAR_MAX ? L'A' <= ch && ch <= L'Z' ? static_cast<wchar_t>(ch ^ 0x20) : ch : static_cast<wchar_t>(::towlower(ch)); }
+template<>  char   totupper< char  >( char   const ch) { return ch <= SCHAR_MAX ?  'a' <= ch && ch <=  'z' ? static_cast< char  >(ch ^ 0x20) : ch : static_cast< char  >(::tolower (ch)); }
+template<> wchar_t totupper<wchar_t>(wchar_t const ch) { return ch <= SCHAR_MAX ? L'a' <= ch && ch <= L'z' ? static_cast<wchar_t>(ch ^ 0x20) : ch : static_cast<wchar_t>(::towlower(ch)); }
 
 template<class It>
 struct case_insensitive_iterator
@@ -146,21 +144,23 @@ struct string_matcher::base_type
 		typedef typename basic_regex_of_::match_results_type match_results_type;
 		typedef Char char_type;
 		typedef std::vector<Char, Alloc> pattern_type;
+		enum AnchorType { UNANCHORED_BEGIN = 1 << 0, UNANCHORED_END = 1 << 1 };
 		pattern_kind kind;
 		pattern_options option;
 		pattern_type pattern;
 		copyable<boost::algorithm::boyer_moore_horspool<iterator> > string_search;
 		copyable<boost::algorithm::boyer_moore_horspool<ci_iterator> > string_search_ci;
-		bool substring, case_insensitive;
+		AnchorType unanchored;
+		bool case_insensitive;
 		size_t pattern_stats[1 << (sizeof(char) * CHAR_BIT)];
 		match_results_type mr;
 		regex_type re;
 		explicit impl(pattern_kind const kind, pattern_options const option, pattern_type pattern) :
-			kind(kind), option(option), pattern(), substring(),
+			kind(kind), option(option), pattern(), unanchored(),
 			string_search(pattern.data(), pattern.data()), string_search_ci(ci_iterator(pattern.data()), ci_iterator(pattern.data()))
 		{ pattern.swap(this->pattern); this->init(); }
 		explicit impl(pattern_kind const kind, pattern_options const option, char_type const pattern[], size_t const length) :
-			kind(kind), option(option), pattern(pattern, pattern + static_cast<ptrdiff_t>(length)), substring(),
+			kind(kind), option(option), pattern(pattern, pattern + static_cast<ptrdiff_t>(length)), unanchored(),
 			string_search(pattern, pattern), string_search_ci(ci_iterator(pattern), ci_iterator(pattern))
 		{ this->init(); }
 		template<class It>
@@ -175,7 +175,7 @@ struct string_matcher::base_type
 		}
 		void init()
 		{
-			this->substring = false;
+			this->unanchored = AnchorType();
 			this->case_insensitive = !!(this->option & pattern_option_case_insensitive);
 			this->string_search.emplace(this->pattern.data(), this->pattern.data());
 			this->string_search_ci.emplace(ci_iterator(this->pattern.data()), ci_iterator(this->pattern.data()));
@@ -183,33 +183,57 @@ struct string_matcher::base_type
 			typedef special_chars<char_type> special_chars_type;
 			if (this->kind == pattern_glob || this->kind == pattern_globstar)
 			{
-				typename pattern_type::iterator i = this->pattern.begin(), j = this->pattern.end();
-				for (;;)
+				size_t const minwild = 1 + (this->kind == pattern_globstar);
+				// Strip leading and trailing full-wildcards first!
+				size_t prefix_asterisk = 0;
+				while (prefix_asterisk < this->pattern.size() && this->pattern[prefix_asterisk] == special_chars_type::asterisk()) { ++prefix_asterisk; }
+				size_t suffix_asterisk = 0;
+				while (suffix_asterisk < this->pattern.size() && this->pattern[this->pattern.size() - 1 - suffix_asterisk] == special_chars_type::asterisk()) { ++suffix_asterisk; }
+				this->unanchored = static_cast<AnchorType>(this->unanchored | ((prefix_asterisk >= minwild ? UNANCHORED_BEGIN : 0) | (suffix_asterisk >= minwild ? UNANCHORED_END : 0)));
+				if (suffix_asterisk >= minwild)
 				{
-					int n = 0;
-					if (i != j && *i == special_chars_type::asterisk()) { ++i; ++n; }
-					if (j != i && *(j - 1) == special_chars_type::asterisk()) { --j; ++n; }
-					if (!n) { break; }
+					this->pattern.erase(this->pattern.end() - static_cast<ptrdiff_t>(suffix_asterisk), this->pattern.end());
+					suffix_asterisk = 0;
+					if (prefix_asterisk > this->pattern.size()) { prefix_asterisk = this->pattern.size(); }
 				}
-				if (i == j
-					? i != this->pattern.begin() || j != this->pattern.end()
-					: (i != this->pattern.begin() && j != this->pattern.end() || this->kind == pattern_glob))
+				if (prefix_asterisk >= minwild)
 				{
-					ptrdiff_t const minwild = this->kind == pattern_glob ? 1 : 2;
-					if (std::find(i, j, special_chars_type::asterisk()) == j && (
-						i == j /* if entire pattern is asterisks, it will match anything regardless of * or ** being used. */ ||
-						(i - this->pattern.begin() >= minwild && this->pattern.end() - j >= minwild)
-						))
+					this->pattern.erase(this->pattern.begin(), this->pattern.begin() + static_cast<ptrdiff_t>(prefix_asterisk));
+					prefix_asterisk = 0;
+					if (suffix_asterisk > this->pattern.size()) { suffix_asterisk = this->pattern.size(); }
+				}
+				if (this->kind == pattern_glob && !std::count(this->pattern.begin(), this->pattern.end(), special_chars_type::question()))
+				{
+					// reduce to pattern_globstar if possible (question marks can make this impossible)
+					pattern_type globstar_pattern;
+					globstar_pattern.reserve(2 * this->pattern.size());
+					for (size_t i = 0; i != this->pattern.size(); ++i)
 					{
-						ptrdiff_t const ii = i - this->pattern.begin();
-						this->pattern.erase(j, this->pattern.end());
-						this->pattern.erase(this->pattern.begin(), this->pattern.begin() + ii);
+						typename pattern_type::value_type ch = this->pattern[i];
+						if (ch == special_chars_type::asterisk())
+						{ globstar_pattern.push_back(ch); }
+						globstar_pattern.push_back(ch);
+					}
+					globstar_pattern.swap(this->pattern);
+					this->kind = pattern_globstar;
+				}
+				if (this->kind == pattern_globstar)
+				{
+					size_t const questions = std::count(this->pattern.begin(), this->pattern.end(), special_chars_type::question());
+					size_t const middle_asterisk = std::count(this->pattern.begin() + static_cast<ptrdiff_t>(prefix_asterisk), this->pattern.end() - static_cast<ptrdiff_t>(this->pattern.size() - prefix_asterisk < suffix_asterisk ? this->pattern.size() - prefix_asterisk : suffix_asterisk), special_chars_type::asterisk());
+					assert(this->kind == pattern_globstar && "anchoring logic here is only valid for pattern_globstar");
+					if (!middle_asterisk && !questions &&
+						(!prefix_asterisk || prefix_asterisk >= minwild) &&
+						(!suffix_asterisk || suffix_asterisk >= minwild))
+					{
+						// NOTE: Prefix and suffix asterisks may overlap!
+						this->pattern.erase(this->pattern.end() - static_cast<ptrdiff_t>(suffix_asterisk), this->pattern.end());
+						this->pattern.erase(this->pattern.begin(), this->pattern.begin() + static_cast<ptrdiff_t>(prefix_asterisk < this->pattern.size() ? prefix_asterisk : this->pattern.size()));
 						this->kind = pattern_verbatim;
-						this->substring |= true;
 					}
 				}
 			}
-			if (this->kind == pattern_glob || this->kind == pattern_globstar)
+			if (this->kind == pattern_glob || this->kind == pattern_globstar)  // reduce to regex
 			{
 				pattern_type to_escape;
 				to_escape.push_back(special_chars_type::backslash());
@@ -234,27 +258,39 @@ struct string_matcher::base_type
 				std::sort(to_escape.begin(), to_escape.end());
 				/*   \**\     should be replaced with     \\(?:[^\\]+\\)*   */
 				pattern_type pattern;
+				if (!(this->unanchored & UNANCHORED_BEGIN) && (this->unanchored & UNANCHORED_END /* this is just an optimization, because regex_match will take care of it */)) { pattern.push_back(special_chars_type::caret()); }
 				for (size_t i = 0; i != this->pattern.size(); ++i)
 				{
 					typename pattern_type::value_type ch = this->pattern[i];
 					if (ch == special_chars_type::question())
 					{
-						pattern.push_back(special_chars_type::open_bracket());
-						pattern.push_back(special_chars_type::caret());
-						pattern.push_back(special_chars_type::backslash());  // escape
-						pattern.push_back(special_chars_type::backslash());  // directory sep
-						pattern.push_back(special_chars_type::backslash());  // escape
-						pattern.push_back(special_chars_type::slash());  // directory sep
-						pattern.push_back(special_chars_type::close_bracket());
+						if (this->kind == pattern_glob)
+						{
+							pattern.push_back(special_chars_type::period());
+						}
+						else
+						{
+							pattern.push_back(special_chars_type::open_bracket());
+							pattern.push_back(special_chars_type::caret());
+							pattern.push_back(special_chars_type::backslash());  // escape
+							pattern.push_back(special_chars_type::backslash());  // directory sep
+							pattern.push_back(special_chars_type::backslash());  // escape
+							pattern.push_back(special_chars_type::slash());  // directory sep
+							pattern.push_back(special_chars_type::close_bracket());
+						}
 					}
 					else
 					{
 						if (ch == special_chars_type::asterisk())  // TODO: Also check for double-astrisks that weren't handled previously...
 						{
-							if (i + 1 < this->pattern.size() && this->pattern[i + 1] == special_chars_type::asterisk())
+							if (this->kind == pattern_glob)
 							{
-								if (i > 0 && (this->pattern[i - 1] == special_chars_type::slash() || this->pattern[i - 1] == special_chars_type::backslash()) &&
-									i + 2 < this->pattern.size() && (this->pattern[i + 2] == special_chars_type::slash() || this->pattern[i + 2] == special_chars_type::backslash()))
+								pattern.push_back(special_chars_type::period());
+							}
+							else if (i + 1 < this->pattern.size() && this->pattern[i + 1] == special_chars_type::asterisk())
+							{
+								if (i > 0 && this->pattern[i - 1] == special_chars_type::backslash() &&
+									i + 2 < this->pattern.size() && this->pattern[i + 2] == special_chars_type::backslash())
 								{
 									pattern.push_back(special_chars_type::open_parenthesis());
 									pattern.push_back(special_chars_type::question());
@@ -270,13 +306,35 @@ struct string_matcher::base_type
 									pattern.push_back(special_chars_type::backslash());  // escape
 									pattern.push_back(this->pattern[i + 2]);  // directory sep
 									pattern.push_back(special_chars_type::close_parenthesis());
+									unsigned long min_quantity = 0;
+									while (i + 6 <= this->pattern.size() &&
+										this->pattern[i + 3] == ch &&
+										this->pattern[i + 4] == ch &&
+										this->pattern[i + 5] == special_chars_type::backslash())
+									{
+										++min_quantity;
+										i += 3;
+									}
+									if (min_quantity == 0) { /* asterisk is fine */ }
+									else if (min_quantity == 1) { ch = special_chars_type::plus(); }
+									else
+									{
+										pattern.push_back(special_chars_type::open_brace());
+										TCHAR buffer[32];
+										buffer[0] = _T('\0');
+										_ultot(min_quantity, buffer, 10);
+										for (size_t j = 0; buffer[j]; ++j)
+										{ pattern.push_back(static_cast<typename pattern_type::value_type>(buffer[j])); }
+										pattern.push_back(special_chars_type::comma());
+										ch = special_chars_type::close_brace();
+									}
+									// Right now 'i' is on the first asterisk
 									++i;
 								}
 								else
 								{
 									pattern.push_back(special_chars_type::period());
 								}
-								ch = special_chars_type::asterisk();
 								++i;
 							}
 							else
@@ -297,19 +355,16 @@ struct string_matcher::base_type
 						pattern.push_back(ch);
 					}
 				}
+				if (this->unanchored & UNANCHORED_END)
+				{
+					// regex_match is faster than regex_search when dealing with slack ends
+					pattern.push_back(special_chars_type::period());
+					pattern.push_back(special_chars_type::asterisk());
+					this->unanchored = static_cast<AnchorType>(this->unanchored & static_cast<AnchorType>(~UNANCHORED_END));
+				}
+				if (!(this->unanchored & UNANCHORED_END) && (this->unanchored & UNANCHORED_BEGIN /* this is just an optimization, because regex_match will take care of it */)) { pattern.push_back(special_chars_type::dollar()); }
 				pattern.swap(this->pattern);
-				this->substring = false;
 				this->kind = pattern_regex;
-			}
-			if (this->kind == pattern_verbatim && this->substring && this->pattern.empty())
-			{
-				this->substring = false;
-				this->kind = pattern_anything;
-			}
-			if (this->kind == pattern_verbatim && this->substring)
-			{
-				this->string_search.emplace(this->pattern.data(), this->pattern.data() + static_cast<ptrdiff_t>(this->pattern.size()));
-				this->string_search_ci.emplace(ci_iterator(this->pattern.data()), ci_iterator(this->pattern.data() + static_cast<ptrdiff_t>(this->pattern.size())));
 			}
 			if (this->kind == pattern_regex)
 			{
@@ -326,59 +381,96 @@ struct string_matcher::base_type
 					throw std::invalid_argument(ex.what());
 				}
 			}
+			if (this->kind == pattern_verbatim && this->unanchored == (this->unanchored | (UNANCHORED_BEGIN | UNANCHORED_END)))
+			{
+				this->string_search.emplace(this->pattern.data(), this->pattern.data() + static_cast<ptrdiff_t>(this->pattern.size()));
+				this->string_search_ci.emplace(ci_iterator(this->pattern.data()), ci_iterator(this->pattern.data() + static_cast<ptrdiff_t>(this->pattern.size())));
+				if (this->pattern.empty())
+				{
+					this->kind = pattern_anything;
+				}
+			}
 		}
-		bool is_match_verbatim(char_type const *const needle_begin, char_type const *const needle_end) const
+		bool is_match_verbatim(char_type const *const corpus_begin, char_type const *const corpus_end) const
 		{
 			bool result;
-			if (this->substring)
+			typedef char_type const *corpus_iterator;
+			bool const case_insensitive = this->case_insensitive,
+				unanchored_begin = !!(this->unanchored & UNANCHORED_BEGIN),
+				unanchored_end = !!(this->unanchored & UNANCHORED_END);
+			typename pattern_type::const_iterator const pattern_begin = this->pattern.begin();
+			size_t const
+				corpus_length = static_cast<size_t>(std::distance(corpus_begin, corpus_end)),
+				pattern_length = static_cast<size_t>(std::distance(pattern_begin, this->pattern.end()));
+			if (corpus_length < pattern_length)
 			{
-				result = (this->case_insensitive
-					? this->string_search_ci(ci_iterator(needle_begin), ci_iterator(needle_end)).first.base()
-					: this->string_search(needle_begin, needle_end).first) != needle_end;
+				result = false;
+			}
+			else if (unanchored_end)
+			{
+				if (unanchored_begin)  // substring
+				{
+					result = (case_insensitive
+						? this->string_search_ci(ci_iterator(corpus_begin), ci_iterator(corpus_end)).first.base()
+						: this->string_search(corpus_begin, corpus_end).first) != corpus_end;
+				}
+				else  // prefix
+				{
+					corpus_iterator const corpus_match_end = corpus_begin + static_cast<ptrdiff_t>(pattern_length);
+					result = (case_insensitive
+						? std::equal(ci_iterator(corpus_begin), ci_iterator(corpus_match_end), ci_iterator(pattern_length ? &*pattern_begin : NULL))
+						: std::equal(corpus_begin, corpus_match_end, pattern_begin));
+				}
 			}
 			else
 			{
-				result = std::distance(needle_begin, needle_end) == std::distance(this->pattern.begin(), this->pattern.end()) && (this->case_insensitive
-					? std::equal(ci_iterator(needle_begin), ci_iterator(needle_end), ci_iterator(this->pattern.empty() ? NULL : &*this->pattern.begin()))
-					: std::equal(needle_begin, needle_end, this->pattern.begin()));
+				if (unanchored_begin)  // suffix
+				{
+					corpus_iterator const corpus_match_begin = corpus_end - static_cast<ptrdiff_t>(pattern_length);
+					result = (case_insensitive
+						? std::equal(ci_iterator(corpus_match_begin), ci_iterator(corpus_end), ci_iterator(pattern_length ? &*pattern_begin : NULL))
+						: std::equal(corpus_match_begin, corpus_end, pattern_begin));
+				}
+				else  // full string
+				{
+					result = corpus_length == pattern_length && (case_insensitive
+						? std::equal(ci_iterator(corpus_begin), ci_iterator(corpus_end), ci_iterator(pattern_length ? &*pattern_begin : NULL))
+						: std::equal(corpus_begin, corpus_end, pattern_begin));
+				}
 			}
 			return result;
 		}
-		bool is_match_regex(char_type const *const needle_begin, char_type const *const needle_end, match_results_type *const mr = NULL) const
+		bool is_match_regex(char_type const *const corpus_begin, char_type const *const corpus_end, match_results_type *const mr = NULL) const
 		{
 			bool result;
-			result = this->substring
-				? mr ? regex_namespace::regex_search(needle_begin, needle_end, *mr, this->re) : regex_namespace::regex_search(needle_begin, needle_end, this->re)
-				: mr ? regex_namespace::regex_match(needle_begin, needle_end, *mr, this->re) : regex_namespace::regex_match(needle_begin, needle_end, this->re);
+			result = this->unanchored
+				? (mr ? regex_namespace::regex_search(corpus_begin, corpus_end, *mr, this->re) : regex_namespace::regex_search(corpus_begin, corpus_end, this->re))
+				: (mr ? regex_namespace::regex_match(corpus_begin, corpus_end, *mr, this->re) : regex_namespace::regex_match(corpus_begin, corpus_end, this->re));
 			return result;
 		}
-		bool is_match(char_type const needle[], size_t const length)
+		bool is_match(char_type const corpus[], size_t const length)
 		{
-			char_type const *const needle_end = needle + static_cast<ptrdiff_t>(length);
+			char_type const *const corpus_end = corpus + static_cast<ptrdiff_t>(length);
 			bool result;
 			switch (this->kind)
 			{
 			case pattern_anything: result = true; break;
-			case pattern_verbatim: result = this->is_match_verbatim(needle, needle_end); break;
-			case pattern_regex: result = this->is_match_regex(needle, needle_end, &this->mr); break;
-			case pattern_glob:
-			case pattern_globstar:
-			default: result = false;
+			case pattern_verbatim: result = this->is_match_verbatim(corpus, corpus_end); break;
+			case pattern_regex: result = this->is_match_regex(corpus, corpus_end, &this->mr); break;
+			default: __debugbreak(); result = false; break;
 			}
 			return result;
 		}
-		bool is_match(char_type const needle[], size_t const length) const
+		bool is_match(char_type const corpus[], size_t const length) const
 		{
-			char_type const *const needle_end = needle + static_cast<ptrdiff_t>(length);
+			char_type const *const corpus_end = corpus + static_cast<ptrdiff_t>(length);
 			bool result;
 			switch (this->kind)
 			{
 			case pattern_anything: result = true; break;
-			case pattern_verbatim: result = this->is_match_verbatim(needle, needle_end); break;
-			case pattern_regex: result = this->is_match_regex(needle, needle_end); break;
-			case pattern_glob:
-			case pattern_globstar:
-			default: result = false;
+			case pattern_verbatim: result = this->is_match_verbatim(corpus, corpus_end); break;
+			case pattern_regex: result = this->is_match_regex(corpus, corpus_end); break;
+			default: __debugbreak(); result = false; break;
 			}
 			return result;
 		}
@@ -420,6 +512,89 @@ string_matcher::string_matcher(pattern_kind const kind, pattern_options const op
 string_matcher::string_matcher(this_type const &other) : p(other.p ? new base_type(*other.p) : NULL) { }
 string_matcher::this_type &string_matcher::operator =(this_type other) { return other.swap(*this), *this; }
 void string_matcher::swap(this_type &other) { base_type *const p = this->p; this->p = other.p; other.p = p; }
+
+#define X_ASSERT(C) assert(!(C) ? (__debugbreak(), (C)) : true);
+static struct string_matcher_tester
+{
+	string_matcher_tester()
+	{
+		for (size_t i = 0; i < 2; ++i)
+		{
+			string_matcher::pattern_kind const kind = i ? string_matcher::pattern_globstar : string_matcher::pattern_glob;
+			X_ASSERT(!string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("")).is_match(_T("a")));
+			X_ASSERT(!string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("?")).is_match(_T("")));
+			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("*")).is_match(_T("")));
+			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("?")).is_match(_T("a")));
+			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("*")).is_match(_T("a")));
+			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("*?")).is_match(_T("a")));
+			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("?*")).is_match(_T("a")));
+			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("*?*")).is_match(_T("a")));
+			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("*a*")).is_match(_T("a")));
+			X_ASSERT(!string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("*b*")).is_match(_T("a")));
+			X_ASSERT(!string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("?*?")).is_match(_T("a")));
+			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("?*?")).is_match(_T("ab")));
+		}
+
+		X_ASSERT(string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("*?")).is_match(_T("a\\b")));
+		X_ASSERT(string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("?*?")).is_match(_T("a\\b")));
+		X_ASSERT(string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("?*?")).is_match(_T("a\\")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("?*?")).is_match(_T("a")));
+		X_ASSERT(string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("**?")).is_match(_T("a\\b")));
+		X_ASSERT(string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("*\\*")).is_match(_T("a\\b")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("*\\")).is_match(_T("a\\b")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("\\*")).is_match(_T("a\\b")));
+		X_ASSERT(string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("**")).is_match(_T("a")));
+		X_ASSERT(string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("**")).is_match(_T("a\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("**")).is_match(_T("\\b")));
+
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*?")).is_match(_T("a\\b")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("?*?")).is_match(_T("a\\b")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("?*?")).is_match(_T("a\\")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("?*?")).is_match(_T("a")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**?")).is_match(_T("a\\b")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\*")).is_match(_T("a\\b")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\")).is_match(_T("a\\b")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("\\*")).is_match(_T("a\\b")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**")).is_match(_T("a")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**")).is_match(_T("a\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**")).is_match(_T("\\b")));
+
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**\\")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**\\**")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**\\**\\")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**\\**\\**")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**\\**\\**\\")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**\\**\\**\\")).is_match(_T("a\\b\\c\\")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**\\**\\**\\")).is_match(_T("a\\b\\c")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**\\**\\**\\")).is_match(_T("a\\b\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**")).is_match(_T("a\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**\\")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**\\*\\")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**\\*\\*\\")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("\\**")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("a\\**")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("a?\\**")).is_match(_T("ab\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**\\")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**\\*")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**\\**")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**\\*\\**")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("\\*\\**")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**\\**\\")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**\\**\\**")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**\\*\\*\\*\\")).is_match(_T("a\\b\\c\\d\\")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**\\*\\*\\*\\*\\")).is_match(_T("a\\b\\c\\d\\")));
+
+		X_ASSERT(!string_matcher(string_matcher::pattern_regex, string_matcher::pattern_option_case_insensitive, _T(".")).is_match(_T("ab")));
+		X_ASSERT(string_matcher(string_matcher::pattern_regex, string_matcher::pattern_option_case_insensitive, _T("..")).is_match(_T("ab")));
+		X_ASSERT(string_matcher(string_matcher::pattern_regex, string_matcher::pattern_option_case_insensitive, _T(".*")).is_match(_T("ab")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_regex, string_matcher::pattern_option_case_insensitive, _T("^.")).is_match(_T("ab")));
+		X_ASSERT(string_matcher(string_matcher::pattern_regex, string_matcher::pattern_option_case_insensitive, _T("^.*")).is_match(_T("ab")));
+		X_ASSERT(string_matcher(string_matcher::pattern_regex, string_matcher::pattern_option_case_insensitive, _T("^.*$")).is_match(_T("ab")));
+
+	}
+} const string_matcher_test;
+#undef X_ASSERT
 
 bool string_matcher::is_match(wchar_t const str[], size_t const length) const { return this->p->wide  .is_match(str, base_type::tcslen(str, length)); }
 bool string_matcher::is_match(wchar_t const str[], size_t const length)       { return this->p->wide  .is_match(str, base_type::tcslen(str, length)); }

@@ -84,6 +84,10 @@
 #define IDS_INVALID_PATTERN             179
 #define IDS_HELP_NTFS_METADATA_TITLE    180
 #define IDS_HELP_NTFS_METADATA_BODY     181
+#define IDS_TEXT_UI_LOCALE_NAME         182
+#define IDS_HELP_TRANSLATION_TITLE      183
+#define IDS_HELP_TRANSLATION_BODY       184
+#define IDS_COLUMN_TYPE_HEADER          185
 #define IDC_EDITFILENAME                1001
 #define IDC_LISTFILES                   1002
 #define IDC_LISTVOLUMES                 1003
@@ -103,14 +107,15 @@
 #define ID_HELP_COPYING                 40014
 #define ID_HELP_DONATE                  40016
 #define ID_VIEW_AUTOSIZECOLUMNS         40017
-#define ID_HELP_NTFSMETADATA    40018
+#define ID_HELP_NTFSMETADATA            40018
+#define ID_HELP_TRANSLATION             40019
 
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        147
-#define _APS_NEXT_COMMAND_VALUE         40019
+#define _APS_NEXT_COMMAND_VALUE         40020
 #define _APS_NEXT_CONTROL_VALUE         1009
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
