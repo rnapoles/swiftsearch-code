@@ -49,6 +49,12 @@
 #pragma warning(disable: 5027)  // move assignment operator was implicitly defined as deleted
 #endif
 
+#ifdef _DEBUG
+#define _ASSERTE(Expr) (void)(Expr)
+#define ATLTRACE ATL::CTraceFileAndLineInfo("<redacted-file>", __LINE__)
+#define ATLTRACE2 ATLTRACE
+#endif
+
 #define _USE_MATH_DEFINES 1
 #define _CRT_OBSOLETE_NO_WARNINGS 1
 #define _CRT_SECURE_NO_WARNINGS 1

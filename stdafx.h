@@ -9,6 +9,7 @@
 
 #include <process.h>
 #include <stddef.h>
+#include <assert.h>
 #include <stdio.h>
 #include <tchar.h>
 #include <time.h>
