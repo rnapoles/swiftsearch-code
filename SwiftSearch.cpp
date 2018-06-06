@@ -476,6 +476,20 @@ struct lock_guard
 	friend void swap(lock_guard &a, lock_guard &b) { return a.swap(b); }
 };
 
+ATL::CWindow topmostWindow;
+mutex global_exception_mutex;
+
+long global_exception_handler(struct _EXCEPTION_POINTERS *ExceptionInfo)
+{
+	lock_guard<mutex> const guard(global_exception_mutex);
+	TCHAR buf[512];
+	_sntprintf(buf, sizeof(buf) / sizeof(*buf), _T("Apologies, but this program has encountered error 0x%lX.\r\n\r\nPLEASE tell me about this so I can try to fix it for you!\r\n\r\nIf you see OK, press OK.\r\nOtherwise:\r\n- Press Retry to attempt to handle the error (recommended)\r\n- Press Abort to quit\r\n- Press Ignore to continue (NOT recommended)"), ExceptionInfo->ExceptionRecord->ExceptionCode);
+	buf[sizeof(buf) / sizeof(*buf) - 1] = _T('\0');
+	int const r = MessageBox(topmostWindow.m_hWnd, buf, _T("Fatal Error"), MB_ICONERROR | ((ExceptionInfo->ExceptionRecord->ExceptionFlags & EXCEPTION_NONCONTINUABLE) ? MB_OK : MB_ABORTRETRYIGNORE) | MB_TASKMODAL);
+	if (r == IDABORT) { _exit(ExceptionInfo->ExceptionRecord->ExceptionCode); }
+	return r == IDIGNORE ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
+}
+
 template<size_t N>
 int safe_stprintf(TCHAR (&s)[N], TCHAR const *const format, ...)
 {
@@ -1158,7 +1172,7 @@ std::vector<std::pair<unsigned long long, long long> > get_mft_retrieval_pointer
 		winnt::UNICODE_STRING us = { static_cast<unsigned short>(cch * sizeof(*path)), static_cast<unsigned short>(cch * sizeof(*path)), const_cast<TCHAR *>(path) };
 		winnt::OBJECT_ATTRIBUTES oa = { sizeof(oa), root_dir, &us };
 		winnt::IO_STATUS_BLOCK iosb;
-		unsigned long const error = winnt::RtlNtStatusToDosError(winnt::NtOpenFile(&handle.value, FILE_READ_ATTRIBUTES, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0x00200000 /* FILE_OPEN_REPARSE_POINT */));
+		unsigned long const error = winnt::RtlNtStatusToDosError(winnt::NtOpenFile(&handle.value, FILE_READ_ATTRIBUTES | SYNCHRONIZE, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0x00200000 /* FILE_OPEN_REPARSE_POINT */));
 		if (error == ERROR_FILE_NOT_FOUND) { handle.value = NULL; /* do nothing */ }
 		else if (error) { SetLastError(error); CheckAndThrow(!error); }
 	}
@@ -1799,7 +1813,7 @@ public:
 			winnt::OBJECT_ATTRIBUTES oa = { sizeof(oa), NULL, &us };
 			winnt::IO_STATUS_BLOCK iosb;
 			Handle volume;
-			if (winnt::NtOpenFile(&volume.value, FILE_READ_ATTRIBUTES | FILE_READ_DATA, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0) == 0)
+			if (winnt::NtOpenFile(&volume.value, FILE_READ_ATTRIBUTES | FILE_READ_DATA | SYNCHRONIZE, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0) == 0)
 			{
 				struct : winnt::FILE_FS_ATTRIBUTE_INFORMATION { unsigned char buf[MAX_PATH]; } info = {};
 				if (winnt::NtQueryVolumeInformationFile(volume.value, &iosb, &info, sizeof(info), 5) ||
@@ -2081,7 +2095,8 @@ public:
 					++names_wasted_bytes;
 				}
 			}
-			_stprintf(buf,
+			int const nbuf = _sntprintf(buf,
+				sizeof(buf) / sizeof(*buf),
 				_T("%s\trecords_data\twidth = %2u\tsize = %8I64u\tcapacity = %8I64u\n")
 				_T("%s\trecords_lookup\twidth = %2u\tsize = %8I64u\tcapacity = %8I64u\n")
 				_T("%s\tnames\twidth = %2u\tsize = %8I64u\tcapacity = %8I64u\t%8I64u bytes wasted\n")
@@ -2094,7 +2109,8 @@ public:
 				this->_root_path.c_str(), static_cast<unsigned>(sizeof(*this->nameinfos     .begin())), static_cast<unsigned long long>(this->nameinfos     .size()), static_cast<unsigned long long>(this->nameinfos     .capacity()),
 				this->_root_path.c_str(), static_cast<unsigned>(sizeof(*this->streaminfos   .begin())), static_cast<unsigned long long>(this->streaminfos   .size()), static_cast<unsigned long long>(this->streaminfos   .capacity()),
 				this->_root_path.c_str(), static_cast<unsigned>(sizeof(*this->childinfos    .begin())), static_cast<unsigned long long>(this->childinfos    .size()), static_cast<unsigned long long>(this->childinfos    .capacity()));
-			OutputDebugString(buf);
+			buf[sizeof(buf) / sizeof(*buf) - 1] = _T('\0');
+			if (nbuf > 0) { OutputDebugString(buf); }
 			struct
 			{
 				typedef SizeInfo PreprocessResult;
@@ -3007,6 +3023,21 @@ void autosize_columns(ListViewAdapter list)
 	}
 }
 
+template<class T>
+class TempSwap
+{
+	TempSwap(TempSwap const &);
+	TempSwap &operator =(TempSwap const &);
+	T *target, old_value;
+public:
+	~TempSwap() { if (this->target) { using std::swap; swap(*this->target, this->old_value); } }
+	TempSwap() : target(), old_value() { }
+	explicit TempSwap(T &target, T const &new_value) : target(&target), old_value(new_value) { using std::swap; swap(*this->target, this->old_value); }
+	void reset() { TempSwap().swap(*this); }
+	void reset(T &target, T const &new_value) { TempSwap(target, new_value).swap(*this); }
+	void swap(TempSwap &other) { using std::swap; swap(this->target, other.target); swap(this->old_value, other.old_value); }
+};
+
 class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WTL::CDialogResize<CProgressDialog>
 {
 	typedef CProgressDialog This;
@@ -3039,11 +3070,18 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 	std::tstring lastProgressText, lastProgressTitle;
 	bool windowCreated;
 	bool windowCreateAttempted;
+	TempSwap<ATL::CWindow> setTopmostWindow;
 	int lastProgress, lastProgressTotal;
 	StringLoader LoadString;
 
+	void OnDestroy()
+	{
+		setTopmostWindow.reset();
+	}
+
 	BOOL OnInitDialog(CWindow /*wndFocus*/, LPARAM /*lInitParam*/)
 	{
+		this->setTopmostWindow.reset(::topmostWindow, this->m_hWnd);
 		(this->progressText.SubclassWindow)(this->GetDlgItem(IDC_RICHEDITPROGRESS));
 		// SetClassLongPtr(this->m_hWnd, GCLP_HBRBACKGROUND, reinterpret_cast<LONG_PTR>(GetSysColorBrush(COLOR_3DFACE)));
 		this->btnPause.Attach(this->GetDlgItem(IDRETRY));
@@ -3055,6 +3093,7 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 		ATL::CComBSTR bstr;
 		this->progressText.GetWindowText(&bstr);
 		this->lastProgressText.assign(static_cast<LPCTSTR>(bstr), bstr ? bstr.Length() : 0);
+
 
 		return TRUE;
 	}
@@ -3091,6 +3130,7 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 #pragma warning(suppress: 4555)
 	BEGIN_MSG_MAP_EX(This)
 		CHAIN_MSG_MAP(CDialogResize<This>)
+		MSG_WM_DESTROY(OnDestroy)
 		MSG_WM_INITDIALOG(OnInitDialog)
 		// MSG_WM_ERASEBKGND(OnEraseBkgnd)
 		// MSG_WM_CTLCOLORSTATIC(OnCtlColorStatic)
@@ -3307,7 +3347,14 @@ class IoCompletionPort : public RefCounted<IoCompletionPort>
 	typedef std::vector<Task> Pending;
 	static unsigned int CALLBACK iocp_worker(void *me)
 	{
-		return static_cast<this_type volatile *>(me)->worker();
+		unsigned int result = 0;
+		__try
+		{
+			result = static_cast<this_type volatile *>(me)->worker();
+		}
+		__except (global_exception_handler((struct _EXCEPTION_POINTERS *)GetExceptionInformation()))
+		{ result = GetExceptionCode(); }
+		return result;
 	}
 	static unsigned long get_num_threads()
 	{
@@ -3739,7 +3786,7 @@ int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t co
 				winnt::UNICODE_STRING us = { sizeof(root_dir_id), sizeof(root_dir_id), reinterpret_cast<wchar_t *>(&root_dir_id) };
 				winnt::OBJECT_ATTRIBUTES oa = { sizeof(oa), volume, &us };
 				winnt::IO_STATUS_BLOCK iosb;
-				unsigned long const error = winnt::RtlNtStatusToDosError(winnt::NtOpenFile(&root_dir.value, FILE_READ_ATTRIBUTES, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0x00002000 /* FILE_OPEN_BY_FILE_ID */));
+				unsigned long const error = winnt::RtlNtStatusToDosError(winnt::NtOpenFile(&root_dir.value, FILE_READ_ATTRIBUTES | SYNCHRONIZE, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0x00002000 /* FILE_OPEN_BY_FILE_ID */));
 				if (error) { SetLastError(error); CheckAndThrow(!error); }
 			}
 			{
@@ -4082,6 +4129,7 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	COLORREF encryptedColor;
 	COLORREF compressedColor;
 	value_initialized<int> suppress_escapes;
+	TempSwap<ATL::CWindow> setTopmostWindow;
 	StringLoader LoadString;
 	static DWORD WINAPI SHOpenFolderAndSelectItemsThread(IN LPVOID lpParameter)
 	{
@@ -4107,7 +4155,7 @@ public:
 		CModifiedDialogImpl<CMainDlg>(true, rtl),
 		closing_event(CreateEvent(NULL, TRUE, FALSE, NULL)), iocp(new IoCompletionPort()),
 		nformat_ui(std::locale("")), nformat_io(std::locale()), lcid(GetThreadLocale()), hEvent(hEvent),
-		iconLoader(BackgroundWorker::create(true)),
+		iconLoader(BackgroundWorker::create(true, global_exception_handler)),
 		deletedColor(RGB(0xFF, 0, 0)), encryptedColor(RGB(0, 0xFF, 0)), compressedColor(RGB(0, 0, 0xFF))
 	{
 		winnt::SYSTEM_TIMEOFDAY_INFORMATION info = {};
@@ -4174,6 +4222,7 @@ public:
 
 	void OnDestroy()
 	{
+		setTopmostWindow.reset();
 		UnregisterWait(this->hWait);
 		this->DeleteNotifyIcon();
 		this->iconLoader->clear();
@@ -4374,6 +4423,7 @@ public:
 	BOOL OnInitDialog(CWindow /*wndFocus*/, LPARAM /*lInitParam*/)
 	{
 		_Module.GetMessageLoop()->AddMessageFilter(this);
+		this->setTopmostWindow.reset(::topmostWindow, this->m_hWnd);
 
 		this->SetWindowText(this->LoadString(IDS_APPNAME));
 		this->menu.LoadMenu(IDR_MENU1);

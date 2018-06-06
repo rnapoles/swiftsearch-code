@@ -41,7 +41,7 @@ public:
 
 	virtual void clear() = 0;
 
-	static BackgroundWorker *create(bool coInitialize = true);
+	static BackgroundWorker *create(bool coInitialize = true, long exception_handler(struct _EXCEPTION_POINTERS *) = NULL);
 
 	template<typename Func>
 	void add(Func const &func, long const insert_before_timestamp)
@@ -76,11 +76,24 @@ class BackgroundWorkerImpl : public BackgroundWorker
 	HANDLE hThread;
 	HANDLE hSemaphore;
 	volatile bool stop;
-
-	static unsigned int CALLBACK entry(void *arg) { return ((BackgroundWorkerImpl *)arg)->process(); }
+	long (*exception_handler)(struct _EXCEPTION_POINTERS *);
+	static unsigned int CALLBACK entry(void *arg)
+	{
+		BackgroundWorkerImpl *const me = (BackgroundWorkerImpl *)arg;
+		unsigned int result = 0;
+		__try
+		{
+			result = me->process();
+		}
+		__except (me->exception_handler ? me->exception_handler(GetExceptionInformation()) : EXCEPTION_CONTINUE_SEARCH)
+		{
+			result = GetExceptionCode();
+		}
+		return result;
+	}
 public:
-	BackgroundWorkerImpl(bool coInitialize)
-		: coInitialize(coInitialize), tid(0), hThread(), hSemaphore(NULL), stop(false)
+	BackgroundWorkerImpl(bool coInitialize, long exception_handler(struct _EXCEPTION_POINTERS *))
+		: coInitialize(coInitialize), tid(0), hThread(), hSemaphore(NULL), stop(false), exception_handler(exception_handler)
 	{
 		this->hThread = (HANDLE)_beginthreadex(NULL, 0, entry, this, CREATE_SUSPENDED, &tid);
 		this->hSemaphore = CreateSemaphore(NULL, 0, LONG_MAX, NULL);
@@ -173,9 +186,9 @@ public:
 		}
 	}
 };
-BackgroundWorker *BackgroundWorker::create(bool coInitialize)
+BackgroundWorker *BackgroundWorker::create(bool coInitialize, long exception_handler(struct _EXCEPTION_POINTERS *))
 {
-	return new BackgroundWorkerImpl(coInitialize);
+	return new BackgroundWorkerImpl(coInitialize, exception_handler);
 }
 
 #endif
