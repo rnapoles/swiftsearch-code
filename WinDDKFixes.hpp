@@ -3,15 +3,24 @@
 // https://sourceforge.net/p/predef/wiki/Libraries/ for _CPPLIB_VER
 
 #ifdef __cplusplus
-#ifdef __cplusplus_cli
-#pragma managed(push, off)
-#endif
 
 #pragma warning(disable: 4005)  // 'WCHAR_{MIN,MAX}': macro redefinition
 
 #pragma warning(push)
+#pragma warning(disable: 4265)  // class has virtual functions, but destructor is not virtual
+#pragma warning(disable: 4365)  // conversion from '...' to '...', signed/unsigned mismatch
+#pragma warning(disable: 4435)  // Object layout under /vd2 will change due to virtual base '...'
+#pragma warning(disable: 4571)  // Informational: catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught
 #pragma warning(disable: 4619)  // there is no warning number ''
+#pragma warning(disable: 4625)  // copy constructor could not be generated because a base class copy constructor is inaccessible or deleted
+#pragma warning(disable: 4626)  // assignment operator could not be generated because a base class assignment operator is inaccessible or deleted
+#pragma warning(disable: 4668)  // '...' is not defined as a preprocessor macro, replacing with '0' for '#if/#elif'
+#pragma warning(disable: 4710)  // function not inlined
+#pragma warning(disable: 4711)  // function selected for automatic inline expansion
 #pragma warning(disable: 4774)  // format string is not a string literal
+#pragma warning(disable: 4820)  // bytes padding added after data member '...'
+#pragma warning(disable: 5026)  // move constructor was implicitly defined as deleted
+#pragma warning(disable: 5027)  // move assignment operator was implicitly defined as deleted
 
 #ifdef  _CSTDLIB_
 #error include <cstdlib> already happened
@@ -43,7 +52,21 @@
 #endif
 #endif
 
-#if _HAS_EXCEPTIONS
+#ifndef _EXTERN_C
+#ifdef __cplusplus
+#define _EXTERN_C extern "C" {
+#else
+#define _EXTERN_C
+#endif
+#endif
+#ifndef _END_EXTERN_C
+#ifdef __cplusplus
+#define _END_EXTERN_C }
+#else
+#define _END_EXTERN_C
+#endif
+#endif
+#if defined(_HAS_EXCEPTIONS) &&_HAS_EXCEPTIONS
 #define _NOEXCEPT	noexcept
 #define _NOEXCEPT_OP(x)	noexcept(x)
 #else
@@ -89,7 +112,9 @@ extern "C" long __cdecl _InterlockedDecrement(long volatile *lpAddend);
 #define X_HAS_MOVE_SEMANTICS
 #endif
 #endif
-#ifdef  X_HAS_MOVE_SEMANTICS
+
+#define _LONGLONG long long
+typedef unsigned _LONGLONG _ULONGLONG;
 
 extern "C"
 {
@@ -101,7 +126,7 @@ extern "C"
 	__declspec(dllimport) int __stdcall GetModuleHandleExA(unsigned long dwFlags, char const *lpModuleName, struct HINSTANCE__** phModule);
 	__declspec(dllimport) int __stdcall GetModuleHandleExW(unsigned long dwFlags, wchar_t const *lpModuleName, struct HINSTANCE__** phModule);
 #if defined(_MSC_VER) && _MSC_VER >= 1400
-#ifdef _M_X64
+#if defined(_WIN64) || defined(_M_X64)  // For some reason _M_X64 doesn't seem to be defined in WinDDK 2003 x64
 	void *__cdecl _InterlockedCompareExchangePointer(void *volatile *Destination, void *ExChange, void *Comparand);
 #	pragma intrinsic(_InterlockedCompareExchangePointer)
 #else
@@ -131,6 +156,8 @@ extern "C"
 
 namespace std
 {
+	template<bool, class T1, class T2> struct _If { typedef T2 type; };
+	template<class T1, class T2> struct _If<true, T1, T2> { typedef T1 type; };
 	template<class T, T v>
 	struct integral_constant
 	{
@@ -142,15 +169,16 @@ namespace std
 	};
 	typedef integral_constant<bool, true > true_type;
 	typedef integral_constant<bool, false> false_type;
+	template<bool B> struct _Cat_base : integral_constant<bool, B> { };
 	template<class> struct is_unsigned;
 	template<> struct is_unsigned<unsigned char     > : true_type { };
 	template<> struct is_unsigned<unsigned short    > : true_type { };
 	template<> struct is_unsigned<unsigned int      > : true_type { };
 	template<> struct is_unsigned<unsigned long     > : true_type { };
 	template<> struct is_unsigned<unsigned long long> : true_type { };
-	template<> struct is_unsigned<         char     > : integral_constant<bool, (~char() >= 0)> { };
+	template<> struct is_unsigned<         char     > : _Cat_base<(~char() >= 0)> { };
 #if defined(_NATIVE_WCHAR_T_DEFINED) && _NATIVE_WCHAR_T_DEFINED
-	template<> struct is_unsigned<        wchar_t   > : integral_constant<bool, (~wchar_t() >= 0)> { };
+	template<> struct is_unsigned<        wchar_t   > : _Cat_base<(~wchar_t() >= 0)> { };
 #endif
 	template<> struct is_unsigned<  signed char     > : false_type { };
 	template<> struct is_unsigned<  signed short    > : false_type { };
@@ -169,19 +197,116 @@ namespace std
 	template<> struct make_unsigned<signed int      > : make_unsigned<unsigned int      > { };
 	template<> struct make_unsigned<signed long     > : make_unsigned<unsigned long     > { };
 	template<> struct make_unsigned<signed long long> : make_unsigned<unsigned long long> { };
-	template<class T> struct add_rvalue_reference { typedef T type; };
+#ifdef X_HAS_MOVE_SEMANTICS
+	template<class T> struct add_rvalue_reference { typedef T &&type; };
 	template<> struct add_rvalue_reference<void> { typedef void type; };
 	template<> struct add_rvalue_reference<void const> { typedef void const type; };
 	template<> struct add_rvalue_reference<void volatile> { typedef void volatile type; };
 	template<> struct add_rvalue_reference<void const volatile> { typedef void const volatile type; };
+#endif
+	template<class T> struct remove_const          { typedef T type; };
+	template<class T> struct remove_const<T const> { typedef T type; };
+	template<class T> struct remove_volatile             { typedef T type; };
+	template<class T> struct remove_volatile<T volatile> { typedef T type; };
+	template<class T> struct remove_cv { typedef typename remove_volatile<typename remove_const<T>::type>::type type; };
 	template<class T> struct remove_reference       { typedef T type; };
 	template<class T> struct remove_reference<T &>  { typedef T type; };
+#ifdef X_HAS_MOVE_SEMANTICS
 	template<class T> struct remove_reference<T &&> { typedef T type; };
+#endif
+	template<class> struct _Always_false { static bool const value = false; };
+	template<class _Ty> struct _Is_floating_point : false_type { };
+	template<> struct _Is_floating_point<float> : true_type { };
+	template<> struct _Is_floating_point<double> : true_type { };
+	template<> struct _Is_floating_point<long double> : true_type { };
+	template<class _Ty> struct is_floating_point : _Is_floating_point<typename remove_cv<_Ty>::type> { };
+	template<class T1, class T2 = T1, class T3 = T2> struct common_type;
+	template<class T> struct common_type<T, T, T> { typedef T type; };
+#if _MSC_VER >= 1900
+	template<class T, T... Vals> struct integer_sequence;
+#endif
+	template<class, class> struct is_same : false_type {};
+	template<class T> struct is_same<T, T> : true_type { };
+	template<class T> struct is_void : is_same<void, typename remove_cv<typename remove_reference<T>::type>::type> { };
+	template<class> struct is_lvalue_reference : false_type { };
+	template<class T> struct is_lvalue_reference<T &> : true_type { };
+	template<class> struct is_rvalue_reference : false_type { };
+#ifdef X_HAS_MOVE_SEMANTICS
+	template<class T> struct is_rvalue_reference<T &&> : true_type { };
+#endif
+	template<class T> struct is_reference : _Cat_base<is_lvalue_reference<T>::value || is_rvalue_reference<T>::value> { };
+	template<class T> struct is_function;
+	template<class T> struct is_function<T &> : false_type { };
+#ifdef X_HAS_MOVE_SEMANTICS
+	template<class T> struct is_function<T &&> : false_type { };
+#endif
+	template<> struct is_function<void>
+	{
+		static bool const value = false;
+	protected:
+		template<class U>
+		static char (&test(U const &))[1];
+	};
+	template<class T> struct is_function : is_function<void>
+	{
+	private:
+		using is_function<void>::test;
+		static T &declval();
+		static char (&test(T *))[2];
+	public:
+		static bool const value = sizeof(test(declval())) > 1;
+	};
+	template<class T> struct is_object : _Cat_base<!is_function<T>::value && !is_reference<T>::value && !is_void<T>::value> { };
+
+#if defined(_MSC_VER) && _MSC_VER >= 1900
+	template<class T> struct is_trivially_copyable : _Cat_base<__is_trivially_copyable(T) /* On older _MSC_VER < 1900 this would be different */> { };
+#endif
+#ifdef X_HAS_MOVE_SEMANTICS
 	template<class T>
 	typename remove_reference<T>::type &&move(T &&value) _NOEXCEPT { return static_cast<typename remove_reference<T>::type &&>(value); } 
+	template<class T> T &&forward(typename remove_reference<T>::type& _Arg) _NOEXCEPT { return static_cast<T &&>(_Arg); }
+	template<class T> T &&forward(typename remove_reference<T>::type&& _Arg) _NOEXCEPT { unsigned char bad_forward_call_checker[is_lvalue_reference<T>::value]; return static_cast<T &&>(_Arg); }
 	template<class T> /* TODO: WARN: technically this is a wrong implementation... if is_function<T>::value || is_void<T>::value, it should not add an r-value reference at all */
 	typename T &&declval() _NOEXCEPT;
+#endif
 }
+
+#ifdef _YVALS
+#error include <yvals.h> already happened
+#endif
+#include <use_ansi.h>  // do this before #include <yvals.h> to avoid this header being affected
+#if defined(_DLL) && _DLL && defined(_MT) && defined(_CRTIMP)
+#undef  _DLL
+#undef  _MT  // so that _Lockit gets optimized out
+#undef  _CRTIMP
+#include <yvals.h>
+#define _CRTIMP __declspec(dllimport)
+#define _MT 1
+#define _DLL 1
+#else
+#include <yvals.h>
+#endif
+
+
+#include <cstdio>  // do this before #include <iosfwd> to avoid affecting that header
+#include <cstring> // do this before #include <iosfwd> to avoid affecting that header
+#include <cwchar>  // do this before #include <iosfwd> to avoid affecting that header
+#include <xstddef> // do this before #include <iosfwd> to avoid affecting that header
+
+#ifdef _IOSFWD_
+#error include <_IOSFWD_> already happened
+#endif
+#if defined(_DLL) && _DLL && defined(_CRTIMP)
+#undef _DLL
+#undef  _CRTIMP
+#define _CRTIMP
+#include <iosfwd>
+#undef  _CRTIMP
+#define _CRTIMP __declspec(dllimport)
+#define _DLL 1
+#else
+#include <iosfwd>
+#endif
 
 namespace std { template<class C, class T, class D = ptrdiff_t, class P = T *, class R = void> struct iterator; }
 #define iterator iterator_bad
@@ -229,13 +354,25 @@ typedef unsigned __int64 _ULonglong;
 #error include <limits> already happened
 #endif
 #include <limits>
+#ifndef SIZE_MAX
+static size_t const SIZE_MAX = ~size_t();
+#endif
+
+namespace
+{
+	size_t strnlen( char   const *s, size_t n) { size_t i = 0; if (s) { while (i < n && s[i]) { ++i; } } return i; }
+	size_t wcsnlen(wchar_t const *s, size_t n) { size_t i = 0; if (s) { while (i < n && s[i]) { ++i; } } return i; }
+}
 
 namespace std
 {
+	typedef long long intmax_t;
+	typedef unsigned long long uintmax_t;
 	using ::ptrdiff_t;
 	using ::size_t;
 	using ::intptr_t;
 	using ::uintptr_t;
+	using ::memcmp;
 	using ::memcpy;
 	using ::memset;
 	using ::strlen;
@@ -250,122 +387,12 @@ namespace std
 	template<class T> T volatile *operator &(T volatile &p) { return reinterpret_cast<T volatile *>(&reinterpret_cast<unsigned char volatile &>(p)); }
 	template<class T> T const volatile *operator &(T const volatile &p) { return reinterpret_cast<T const volatile *>(&reinterpret_cast<unsigned char const volatile &>(p)); }
 
-	template<bool B, class T = void> struct enable_if {};
+	template<bool B,class T= void> struct enable_if {};
 	template<class T> struct enable_if<true, T> { typedef T type; };
 
-	template<> class numeric_limits<__int64>;
-	template<> class numeric_limits<unsigned __int64>;
-
-#ifndef _LLONG_MAX
-#define _LLONG_MAX ((long long)(~0ULL >> 1))
-#endif
-	template<> class _CRTIMP2_PURE numeric_limits<long long>
-		: public _Num_int_base
-	{	// limits for type long long
-	public:
-		typedef long long _Ty;
-
-		static _Ty (min)() _THROW0()
-		{	// return minimum value
-			return (-_LLONG_MAX - 1);
-		}
-
-		static _Ty (max)() _THROW0()
-		{	// return maximum value
-			return (_LLONG_MAX);
-		}
-
-		static _Ty epsilon() _THROW0()
-		{	// return smallest effective increment from 1.0
-			return (0);
-		}
-
-		static _Ty round_error() _THROW0()
-		{	// return largest rounding error
-			return (0);
-		}
-
-		static _Ty denorm_min() _THROW0()
-		{	// return minimum denormalized value
-			return (0);
-		}
-
-		static _Ty infinity() _THROW0()
-		{	// return positive infinity
-			return (0);
-		}
-
-		static _Ty quiet_NaN() _THROW0()
-		{	// return non-signaling NaN
-			return (0);
-		}
-
-		static _Ty signaling_NaN() _THROW0()
-		{	// return signaling NaN
-			return (0);
-		}
-
-		_STCONS(bool, is_signed, true);
-		_STCONS(int, digits, CHAR_BIT * sizeof (long long) - 1);
-		_STCONS(int, digits10, (CHAR_BIT * sizeof (long long) - 1)
-			* 301L / 1000);
-	};
-
-#ifndef _ULLONG_MAX
-#define _ULLONG_MAX (~0ULL)
-#endif
-	template<> class _CRTIMP2_PURE numeric_limits<unsigned long long>
-		: public _Num_int_base
-	{	// limits for type unsigned long long
-	public:
-		typedef unsigned long long _Ty;
-
-		static _Ty (min)() _THROW0()
-		{	// return minimum value
-			return (0);
-		}
-
-		static _Ty (max)() _THROW0()
-		{	// return maximum value
-			return (_ULLONG_MAX);
-		}
-
-		static _Ty epsilon() _THROW0()
-		{	// return smallest effective increment from 1.0
-			return (0);
-		}
-
-		static _Ty round_error() _THROW0()
-		{	// return largest rounding error
-			return (0);
-		}
-
-		static _Ty denorm_min() _THROW0()
-		{	// return minimum denormalized value
-			return (0);
-		}
-
-		static _Ty infinity() _THROW0()
-		{	// return positive infinity
-			return (0);
-		}
-
-		static _Ty quiet_NaN() _THROW0()
-		{	// return non-signaling NaN
-			return (0);
-		}
-
-		static _Ty signaling_NaN() _THROW0()
-		{	// return signaling NaN
-			return (0);
-		}
-
-		_STCONS(bool, is_signed, false);
-		_STCONS(int, digits, CHAR_BIT * sizeof (unsigned long long));
-		_STCONS(int, digits10, (CHAR_BIT * sizeof (unsigned long long))
-			* 301L / 1000);
-	};
-#define BOOST_LIMITS  /* don't include this header... our fixes already take care of it */
+	// TODO: Conflicts with <boost/limits.hpp> due to BOOST_NO_MS_INT64_NUMERIC_LIMITS
+	// template<> class numeric_limits<long long> { };
+	// template<> class numeric_limits<unsigned long long> { };
 
 	template<class T>
 	struct ref_or_void { typedef T &type; };
@@ -514,6 +541,15 @@ namespace boost
 #error include <exception> already happened
 #endif
 #include <exception>  // must be included before <xstring> to avoid renaming clash
+namespace std
+{
+	class exception_ptr;
+	__declspec(noreturn) void __cdecl terminate() throw();
+}
+#ifndef _STD_TERMINATE_DEFINED
+#define _STD_TERMINATE_DEFINED
+__declspec(noreturn) inline void __cdecl __std_terminate() throw() { terminate(); }
+#endif
 
 // std::allocator::rebind doesn't exist!!
 #define allocator allocator_bad
@@ -612,7 +648,13 @@ namespace std
 #ifdef _XSTRING_
 #error #include <xstring> already happened
 #endif
+#if defined(_DLL) && _DLL
+#undef _DLL
 #include <xstring>
+#define _DLL 1
+#else
+#include <xstring>
+#endif
 #ifdef _STDEXCEPT_
 #error #include <stdexcept> already happened
 #endif
@@ -624,18 +666,79 @@ namespace std
 #error include <xlocale> already happened
 #endif
 #define xdigit  blank = space, xdigit  // this is for when #include <xlocale> occurs
+#if defined(_DLL) && _DLL
+#undef _DLL
+#include <xlocale>  // this is included by <istream>, and we DO want our changing of _DLL to affect it! to prevent ctype<> from being imported
+#define _DLL 1
+#include <istream>  // this is included by <string>, but we don't want our changing of _DLL to affect it
+#undef _DLL
 #include <string>
+#define _DLL 1
+#else
+#include <string>
+#endif
+#include <algorithm>  // for rotate()
 #undef  xdigit
 	namespace std
 	{
+		template<class Traits>
+		struct basic_string_good_detail
+		{
+			typedef basic_string_good_detail H;
+			template<class C> static typename C::iterator begin(C &s) { return s.begin(); }
+			template<class C> static typename C::const_iterator begin(C const &s) { return s.begin(); }
+			template<size_t N> static typename Traits::char_type const *begin(typename Traits::char_type const (&s)[N]) { return s; }
+			template<size_t N> static typename Traits::char_type *begin(typename Traits::char_type (&s)[N]) { return s; }
+			static typename Traits::char_type const *begin(typename Traits::char_type const *const s) { return s; }
+			static typename Traits::char_type *begin(typename Traits::char_type *const s) { return s; }
+			template<class C> static typename C::iterator end(C &s) { return s.end(); }
+			template<class C> static typename C::const_iterator end(C const &s) { return s.end(); }
+			template<size_t N> static typename Traits::char_type const *end(typename Traits::char_type const (&s)[N]) { return s + static_cast<ptrdiff_t>(N); }
+			template<size_t N> static typename Traits::char_type *end(typename Traits::char_type (&s)[N]) { return s + static_cast<ptrdiff_t>(N); }
+			static typename Traits::char_type const *end(typename Traits::char_type const *const s) { return s + static_cast<ptrdiff_t>(s ? Traits::length(s) : 0); }
+			static typename Traits::char_type *end(typename Traits::char_type *const s) { return s + static_cast<ptrdiff_t>(s ? Traits::length(s) : 0); }
+			template<class C> static typename C::size_type size(C const &s) { return s.size(); }
+			template<size_t N> static size_t size(typename Traits::char_type const (&)[N]) { return N; }
+			template<size_t N> static size_t size(typename Traits::char_type (&)[N]) { return N; }
+			static size_t size(typename Traits::char_type const *const s) { return s ? Traits::length(s) : 0; }
+			static size_t size(typename Traits::char_type *const s) { return s ? Traits::length(s) : 0; }
+			template<class It1, class It2>
+			static int compare(It1 const &i1, It1 const &j1, It2 const &i2, It2 const &j2)
+			{
+				using std::distance;
+				ptrdiff_t const a = j1 - i1, b = j2 - i2;
+				bool contig1 = true, contig2 = true;
+				for (It1 k1 = i1; k1 != j1; ++k1) { contig1 = contig1 && &*k1 == &*i1 + (k1 - i1); }
+				for (It2 k2 = i2; k2 != j2; ++k2) { contig2 = contig2 && &*k2 == &*i2 + (k2 - i2); }
+				int c;
+				if (contig1 && contig2)
+				{
+					c = Traits::compare(a > 0 ? &*i1 : NULL, b > 0 ? &*i2 : NULL, a < b ? a : b);
+				}
+				else
+				{
+					c = 0;
+					It1 k1 = i1;
+					It2 k2 = i2;
+					for (ptrdiff_t n = a < b ? a : b; c == 0 && n > 0; --n)
+					{
+						// TODO: This breaks for non-char-wise comparisons
+						c = Traits::compare(&*k1, &*k2, 1);
+					}
+				}
+				if (c == 0) { c = a < b ? -1 : (a > b ? +1 : c); }
+				return c;
+			}
+			template<class C1, class C2>
+			static int compare(C1 const &a, C2 const &b) { return compare(H::begin(a), H::end(a), H::begin(b), H::end(b)); }
+		};
 		using ::strchr;
 		template<class T, class Ax = allocator<T> >
 		class vector;
-		template<class Char, class Traits = char_traits<Char> >
-		struct basic_string_view;
 		template<class Char, class Traits = char_traits<Char>, class Ax = allocator<Char> >
 		class basic_string_good : public basic_string<Char, Traits, Ax>
 		{
+			typedef basic_string_good_detail<Traits> H;
 			typedef basic_string_good this_type;
 			typedef basic_string<Char, Traits, Ax> base_type;
 		public:
@@ -647,112 +750,73 @@ namespace std
 			basic_string_good(base_type const &right, size_type const off, size_type const count = base_type::npos, Ax const &ax = Ax()) : base_type(right, off, count, ax) { }
 			basic_string_good(base_type base) : base_type() { base.swap(static_cast<base_type &>(*this)); }
 			basic_string_good(vector<Char, Ax> const &base) : base_type() { this->insert(this->end(), base.begin(), base.end()); }
-			basic_string_good(basic_string_view<Char, Traits> const &other, Ax const &ax = Ax()) : base_type(other.begin(), other.end(), ax) { }
+			// basic_string_good(basic_string_view<Char, Traits> const &other, Ax const &ax = Ax()) : base_type(other.begin(), other.end(), ax) { }
 			using base_type::append;
-			this_type &append(basic_string_view<Char, Traits> const &other) { return static_cast<this_type &>(this->base_type::append(other.begin(), other.end())); }
+			// this_type &append(basic_string_view<Char, Traits> const &other) { return static_cast<this_type &>(this->base_type::append(other.begin(), other.end())); }
 			typename base_type::reference back() { return --*this->base_type::end(); }
 			typename base_type::const_reference back() const { return --*this->base_type::end(); }
-			typename base_type::reference front() { return *this->base_type::front(); }
-			typename base_type::const_reference front() const { return *this->base_type::front(); }
+			typename base_type::reference front() { return *this->base_type::begin(); }
+			typename base_type::const_reference front() const { return *this->base_type::begin(); }
 			using base_type::data;
 			pointer data() { return this->empty() ? NULL : &*this->begin(); }
+#if 0
+			using base_type::insert;
+			this_type &insert(size_type const index, value_type const *const s, size_type const count)
+			{
+				this->base_type::append(s, count);
+				rotate(this->base_type::begin() + static_cast<ptrdiff_t>(index), this->base_type::end() - static_cast<ptrdiff_t>(count), this->base_type::end());
+				return *this;
+			}
+			this_type &insert(size_type const index, value_type const *const s)
+			{
+				size_type const n = this->base_type::size();
+				this->base_type::append(s);
+				rotate(this->base_type::begin() + static_cast<ptrdiff_t>(index), this->base_type::begin() + static_cast<ptrdiff_t>(n), this->base_type::end());
+				return *this;
+			}
+			this_type &insert(size_type const index, size_type const count, value_type const &ch)
+			{
+				this->base_type::append(count, ch);
+				rotate(this->base_type::begin() + static_cast<ptrdiff_t>(index), this->base_type::end() - static_cast<ptrdiff_t>(count), this->base_type::end());
+				return *this;
+			}
+#endif
 			void pop_back() { this->base_type::erase(this->base_type::end() - 1); }
 			void push_back(typename base_type::value_type const &value) { this->base_type::append(static_cast<typename base_type::size_type>(1), value); }
-			void clear() { this->base_type::erase(this->base_type::begin(), this->base_type::end()); }
+			void clear() { this->base_type::erase(0, this->base_type::size()); }
 			this_type operator +(typename base_type::value_type const &c) const { this_type s(*this); s.insert(s.end(), c); return s; }
 			this_type operator +(typename base_type::const_pointer const &other) const { this_type s(other); s.insert(s.begin(), this->base_type::begin(), this->base_type::end()); return s; }
 			this_type operator +(base_type const &other) const { this_type s(other); s.insert(s.begin(), this->base_type::begin(), this->base_type::end()); return s; }
 			void swap(this_type &other) { this->base_type::swap(static_cast<base_type &>(other)); }
-			friend void swap(this_type &a, this_type &b) { swap(static_cast<base_type &>(a), static_cast<base_type &>(b)); }
-			template<class Other> bool operator==(Other const &other) const { return static_cast<basic_string_view<Char, Traits> >(*this) == static_cast<basic_string_view<Char, Traits> >(other); }
-			template<class Other> bool operator!=(Other const &other) const { return static_cast<basic_string_view<Char, Traits> >(*this) != static_cast<basic_string_view<Char, Traits> >(other); }
-			template<class Other> bool operator<=(Other const &other) const { return static_cast<basic_string_view<Char, Traits> >(*this) <= static_cast<basic_string_view<Char, Traits> >(other); }
-			template<class Other> bool operator>=(Other const &other) const { return static_cast<basic_string_view<Char, Traits> >(*this) >= static_cast<basic_string_view<Char, Traits> >(other); }
-			template<class Other> bool operator< (Other const &other) const { return static_cast<basic_string_view<Char, Traits> >(*this) <  static_cast<basic_string_view<Char, Traits> >(other); }
-			template<class Other> bool operator> (Other const &other) const { return static_cast<basic_string_view<Char, Traits> >(*this) >  static_cast<basic_string_view<Char, Traits> >(other); }
-			friend bool operator==(const_pointer const left, this_type const &right) { return static_cast<basic_string_view<Char, Traits> >(left) == static_cast<basic_string_view<Char, Traits> >(right); }
-			friend bool operator!=(const_pointer const left, this_type const &right) { return static_cast<basic_string_view<Char, Traits> >(left) != static_cast<basic_string_view<Char, Traits> >(right); }
-			friend bool operator<=(const_pointer const left, this_type const &right) { return static_cast<basic_string_view<Char, Traits> >(left) <= static_cast<basic_string_view<Char, Traits> >(right); }
-			friend bool operator>=(const_pointer const left, this_type const &right) { return static_cast<basic_string_view<Char, Traits> >(left) >= static_cast<basic_string_view<Char, Traits> >(right); }
-			friend bool operator< (const_pointer const left, this_type const &right) { return static_cast<basic_string_view<Char, Traits> >(left) <  static_cast<basic_string_view<Char, Traits> >(right); }
-			friend bool operator> (const_pointer const left, this_type const &right) { return static_cast<basic_string_view<Char, Traits> >(left) >  static_cast<basic_string_view<Char, Traits> >(right); }
+			friend void swap(this_type &a, this_type &b) { using std::swap; swap(static_cast<base_type &>(a), static_cast<base_type &>(b)); }
+			template<class Other> bool operator==(Other const &other) const { return H::compare(*this, other) == 0; }
+			template<class Other> bool operator!=(Other const &other) const { return H::compare(*this, other) != 0; }
+			template<class Other> bool operator< (Other const &other) const { return H::compare(*this, other) <  0; }
+			template<class Other> bool operator> (Other const &other) const { return H::compare(*this, other) >  0; }
+			template<class Other> bool operator<=(Other const &other) const { return H::compare(*this, other) <= 0; }
+			template<class Other> bool operator>=(Other const &other) const { return H::compare(*this, other) >= 0; }
+			friend bool operator==(const_pointer const left, this_type const &right) { return H::compare(left, right) == 0; }
+			friend bool operator!=(const_pointer const left, this_type const &right) { return H::compare(left, right) != 0; }
+			friend bool operator< (const_pointer const left, this_type const &right) { return H::compare(left, right) <  0; }
+			friend bool operator> (const_pointer const left, this_type const &right) { return H::compare(left, right) >  0; }
+			friend bool operator<=(const_pointer const left, this_type const &right) { return H::compare(left, right) <= 0; }
+			friend bool operator>=(const_pointer const left, this_type const &right) { return H::compare(left, right) >= 0; }
 		};
-		template<class Char, class Traits>
-		struct basic_string_view
-		{
-			typedef basic_string_view this_type;
-			typedef Char value_type;
-			typedef value_type *pointer;
-			typedef value_type const *const_pointer;
-			typedef value_type &reference;
-			typedef value_type const &const_reference;
-			typedef pointer iterator;
-			typedef const_pointer const_iterator;
-			typedef std::reverse_iterator<pointer> reverse_iterator;
-			typedef std::reverse_iterator<const_pointer> const_reverse_iterator;
-			typedef ptrdiff_t difference_type;
-			typedef size_t size_type;
-			static size_type const npos = static_cast<size_type>(~size_type());
-			// reference back() { return *--this->end(); }
-			const_reference back() const { return *--this->end(); }
-			// iterator begin() { return this->_begin; }
-			const_iterator begin() const { return this->_begin; }
-			// pointer data() { return this->_begin; }
-			const_pointer data() const { return this->_begin; }
-			bool empty() const { return this->begin() == this->end(); }
-			// iterator end() { return this->_end; }
-			const_iterator end() const { return this->_end; }
-			size_type find(const_pointer const s) const { size_type result = static_cast<size_type>(std::search(this->begin(), this->end(), s, s + static_cast<ptrdiff_t>(char_traits<Char>::length(s))) - this->begin()); if (result >= this->size()) { result = npos; } return result; }
-			size_type find(value_type const &v) const { size_type result = static_cast<size_type>(std::find(this->begin(), this->end(), v) - this->begin()); if (result >= this->size()) { result = npos; } return result; }
-			size_type find_first_of(value_type const &v) const { return this->find(v); }
-			// reference front() { return *this->begin(); }
-			const_reference front() const { return *this->begin(); }
-			size_type length() const { return this->size(); }
-			// reference operator[](size_type const i) { return this->begin()[static_cast<difference_type>(i)]; }
-			const_reference operator[](size_type const i) const { return this->begin()[static_cast<difference_type>(i)]; }
-			void remove_prefix(size_type const n) { this->_begin += static_cast<ptrdiff_t>(n); }
-			void remove_suffix(size_type const n) { this->_end -= static_cast<ptrdiff_t>(n); }
-			size_type size() const { return static_cast<size_type>(this->_end - this->_begin); }
-			this_type substr(size_type const pos = 0, size_type const count = npos) const { return this_type(this->begin() + static_cast<difference_type>(pos), count == npos ? this->end() : this->begin() + static_cast<difference_type>(pos + count)); }
-			basic_string_view() : _begin(), _end() { }
-			template<class Ax>
-			basic_string_view(vector<Char, Ax> const &str) : _begin(str.empty() ? NULL : &*str.begin()), _end((str.empty() ? NULL : &*str.begin()) + static_cast<ptrdiff_t>(str.size())) { }
-			template<class Ax>
-			basic_string_view(basic_string<Char, Traits, Ax> const &str) : _begin(str.empty() ? NULL : &*str.begin()), _end((str.empty() ? NULL : &*str.begin()) + static_cast<ptrdiff_t>(str.size())) { }
-			basic_string_view(const_pointer const &s, size_type const n = npos) : _begin(s), _end(s + static_cast<ptrdiff_t>(n == npos ? char_traits<Char>::length(s) : n)) { }
-			explicit basic_string_view(const_pointer const begin, const_pointer const end) : _begin(begin), _end(end) { }
-			bool operator==(this_type const &other) const { return this->size() == other.size() && equal(this->begin(), this->end(), other.begin()); }
-			bool operator!=(this_type const &other) const { return !(*this == other); }
-			bool operator< (this_type const &other) const { return lexicographical_compare(this->begin(), this->end(), other.begin(), other.end(), less<value_type>()); }
-			bool operator> (this_type const &other) const { return lexicographical_compare(this->begin(), this->end(), other.begin(), other.end(), greater<value_type>()); }
-			bool operator<=(this_type const &other) const { return lexicographical_compare(this->begin(), this->end(), other.begin(), other.end(), less_equal<value_type>()); }
-			bool operator>=(this_type const &other) const { return lexicographical_compare(this->begin(), this->end(), other.begin(), other.end(), greater_equal<value_type>()); }
-			bool operator==(const_pointer const &other) const { return *this == static_cast<this_type>(other); }
-			bool operator!=(const_pointer const &other) const { return *this != static_cast<this_type>(other); }
-			bool operator< (const_pointer const &other) const { return *this <  static_cast<this_type>(other); }
-			bool operator> (const_pointer const &other) const { return *this >  static_cast<this_type>(other); }
-			bool operator<=(const_pointer const &other) const { return *this <= static_cast<this_type>(other); }
-			bool operator>=(const_pointer const &other) const { return *this >= static_cast<this_type>(other); }
-			friend bool operator==(const_pointer const &left, this_type const &right) { return right == left; }
-			friend bool operator!=(const_pointer const &left, this_type const &right) { return right != left; }
-			friend bool operator< (const_pointer const &left, this_type const &right) { return right >  left; }
-			friend bool operator> (const_pointer const &left, this_type const &right) { return right <  left; }
-			friend bool operator<=(const_pointer const &left, this_type const &right) { return right >= left; }
-			friend bool operator>=(const_pointer const &left, this_type const &right) { return right <= left; }
-		private:
-			const_pointer _begin, _end;
-		};
-		typedef basic_string_view<char> string_view;
-		typedef basic_string_view<wchar_t> wstring_view;
-
 		template<class Traits, class Alloc> float stof(basic_string<char, Traits, Alloc> const &str) { return atof(static_cast<char const *>(str.c_str())); }
 		template<class Traits, class Alloc> float stof(basic_string<wchar_t, Traits, Alloc> const &str) { return _wtof(static_cast<wchar_t const *>(str.c_str())); }
 		template<class Traits, class Alloc> int stoi(basic_string<char, Traits, Alloc> const &str) { return atoi(static_cast<char const *>(str.c_str())); }
 		template<class Traits, class Alloc> int stoi(basic_string<wchar_t, Traits, Alloc> const &str) { return _wtoi(static_cast<wchar_t const *>(str.c_str())); }
+		template<class Traits, class Alloc> long stol(basic_string<char, Traits, Alloc> const &str) { return atol(static_cast<char const *>(str.c_str())); }
+		template<class Traits, class Alloc> long stol(basic_string<wchar_t, Traits, Alloc> const &str) { return _wtol(static_cast<wchar_t const *>(str.c_str())); }
+		template<class Traits, class Alloc> long long stoll(basic_string<char, Traits, Alloc> const &str) { return _atoi64(static_cast<char const *>(str.c_str())); }
+		template<class Traits, class Alloc> long long stoll(basic_string<wchar_t, Traits, Alloc> const &str) { return _wtoi64(static_cast<wchar_t const *>(str.c_str())); }
 		template<class T> basic_string_good<char> to_string(T const &);
 		template<> inline basic_string_good<char> to_string<int>(int const &value) { char buf[32]; buf[0] = '\0'; return itoa(value, buf, 10); }
+		template<> inline basic_string_good<char> to_string<unsigned int>(unsigned int const &value) { char buf[32]; buf[0] = '\0'; return _ultoa(value, buf, 10); }
 		template<> inline basic_string_good<char> to_string<long>(long const &value) { char buf[32]; buf[0] = '\0'; return _ltoa(value, buf, 10); }
+		template<> inline basic_string_good<char> to_string<unsigned long>(unsigned long const &value) { char buf[32]; buf[0] = '\0'; return _ultoa(value, buf, 10); }
 		template<> inline basic_string_good<char> to_string<long long>(long long const &value) { char buf[32]; buf[0] = '\0'; return _i64toa(value, buf, 10); }
+		template<> inline basic_string_good<char> to_string<unsigned long long>(unsigned long long const &value) { char buf[32]; buf[0] = '\0'; return _ui64toa(value, buf, 10); }
 	}
 
 	// Fixes for 'vector' -- boost::ptr_vector chokes on the old implementation!
@@ -830,153 +894,6 @@ namespace std
 		typedef unsigned int *pointer;
 		typedef unsigned int &reference;
 	};
-#endif
-
-#if !defined(_NATIVE_WCHAR_T_DEFINED) && (defined(DDK_CTYPE_WCHAR_FIX) && DDK_CTYPE_WCHAR_FIX)
-#ifdef _DLL
-	namespace std
-	{
-		template <class> class ctype;
-		template <> class ctype<wchar_t>;
-	}
-#undef _DLL
-#include <xlocale>
-#define _DLL
-	namespace std
-	{
-		template <>
-		class ctype<wchar_t> : public ctype_base {
-		public:
-			typedef wchar_t _E;
-			typedef _E char_type;
-			bool is(mask _M, _E _C) const
-				{return ((_Ctype._Table[(wchar_t)_C] & _M) != 0); }
-			const _E *is(const _E *_F, const _E *_L, mask *_V) const
-				{for (; _F != _L; ++_F, ++_V)
-					*_V = _Ctype._Table[(wchar_t)*_F];
-				return (_F); }
-			const _E *scan_is(mask _M, const _E *_F,
-				const _E *_L) const
-				{for (; _F != _L && !is(_M, *_F); ++_F)
-					;
-				return (_F); }
-			const _E *scan_not(mask _M, const _E *_F,
-				const _E *_L) const
-				{for (; _F != _L && is(_M, *_F); ++_F)
-					;
-				return (_F); }
-			_E tolower(_E _C) const
-				{return (do_tolower(_C)); }
-			const _E *tolower(_E *_F, const _E *_L) const
-				{return (do_tolower(_F, _L)); }
-			_E toupper(_E _C) const
-				{return (do_toupper(_C)); }
-			const _E *toupper(_E *_F, const _E *_L) const
-				{return (do_toupper(_F, _L)); }
-			_E widen(wchar_t _X) const
-				{return (_X); }
-			const _E *widen(const wchar_t *_F, const wchar_t *_L, _E *_V) const
-				{memcpy(_V, _F, _L - _F);
-				return (_L); }
-			_E narrow(_E _C, wchar_t _D = '\0') const
-				{(_D); return (_C); }
-			const _E *narrow(const _E *_F, const _E *_L, wchar_t _D,
-				wchar_t *_V) const
-				{(_D);memcpy(_V, _F, _L - _F);
-				return (_L); }
-			static locale::id id;
-			explicit ctype(const mask *_Tab = 0, bool _Df = false,
-				size_t _R = 0)
-				: ctype_base(_R)
-				{_Lockit Lk;
-				_Init(_Locinfo());
-				if (_Ctype._Delfl)
-					free((void *)_Ctype._Table), _Ctype._Delfl = false;
-				if (_Tab == 0)
-					_Ctype._Table = _Cltab;
-				else
-					_Ctype._Table = _Tab, _Ctype._Delfl = _Df; }
-			ctype(const _Locinfo& _Lobj, size_t _R = 0)
-				: ctype_base(_R) {_Init(_Lobj); }
-			static size_t __cdecl _Getcat()
-				{return (_LC_CTYPE); }
-			static const size_t table_size;
-		_PROTECTED:
-			virtual ~ctype()
-				{if (_Ctype._Delfl)
-					free((void *)_Ctype._Table); }
-		protected:
-			static void __cdecl _Term(void)
-				{free((void *)_Cltab); }
-			void _Init(const _Locinfo& _Lobj)
-				{_Lockit Lk;
-				_Ctype = _Lobj._Getctype();
-				if (_Cltab == 0)
-					{_Cltab = _Ctype._Table;
-					atexit(_Term);
-					_Ctype._Delfl = false; }}
-			virtual _E do_tolower(_E _C) const
-				{return (_E)(_Tolower((wchar_t)_C, &_Ctype)); }
-			virtual const _E *do_tolower(_E *_F, const _E *_L) const
-				{for (; _F != _L; ++_F)
-					*_F = (_E)_Tolower(*_F, &_Ctype);
-				return ((const _E *)_F); }
-			virtual _E do_toupper(_E _C) const
-				{return ((_E)_Toupper((wchar_t)_C, &_Ctype)); }
-			virtual const _E *do_toupper(_E *_F, const _E *_L) const
-				{for (; _F != _L; ++_F)
-					*_F = (_E)_Toupper(*_F, &_Ctype);
-				return ((const _E *)_F); }
-			const mask *table() const _THROW0()
-				{return (_Ctype._Table); }
-			static const mask * __cdecl classic_table() _THROW0()
-				{_Lockit Lk;
-				if (_Cltab == 0)
-					locale::classic();      // force locale::_Init() call
-				return (_Cltab); }
-		private:
-			_Locinfo::_Ctypevec _Ctype;
-			static const mask *_Cltab;
-		};
-		namespace
-		{
-			struct HINSTANCE__* get_msvcprt_handle()
-			{
-				static struct HINSTANCE__ *volatile g_hMSCRP60 = NULL;
-				if (!g_hMSCRP60)
-				{
-					struct HINSTANCE__ *hMSCRP60 = NULL;
-#if defined(_UNICODE) || defined(UNICODE)
-					GetModuleHandleExW(0x4 | 0x2, reinterpret_cast<wchar_t const *>(&ctype<char>::id), &hMSCRP60);
-#else
-					GetModuleHandleExA(0x4 | 0x2, reinterpret_cast<char const *>(&ctype<char>::id), &hMSCRP60);
-#endif
-					_InterlockedCompareExchangePointer(&reinterpret_cast<void *volatile &>(g_hMSCRP60), hMSCRP60, NULL);
-				}
-				return g_hMSCRP60;
-			}
-		}
-		template<> inline
-			const ctype<wchar_t>& __cdecl use_facet<ctype<wchar_t> >(const locale& _L, const ctype<wchar_t> *,
-				bool _Cfacet)
-			{static const locale::facet *_Psave = 0;
-			_Lockit _Lk;
-			static locale::id *volatile g_ctype_wchar_t_id = NULL;
-			if (!g_ctype_wchar_t_id)
-			{ _InterlockedCompareExchangePointer(&reinterpret_cast<void *volatile &>(g_ctype_wchar_t_id), reinterpret_cast<locale::id *>(GetProcAddress(get_msvcprt_handle(), "?id@?$ctype@G@std@@2V0locale@2@A")), NULL); }
-			size_t _Id = *g_ctype_wchar_t_id;
-			const locale::facet *_Pf = _L._Getfacet(_Id, true);
-			if (_Pf != 0)
-				;
-			else if (!_Cfacet || !_L._Iscloc())
-				_THROW(bad_cast, "missing locale facet");
-			else if (_Psave == 0)
-				_Pf = _Psave = _Tidyfac<ctype<wchar_t>>::_Save(new ctype<wchar_t>);
-			else
-				_Pf = _Psave;
-			return (*(const ctype<wchar_t> *)_Pf); }
-	}
-#endif
 #endif
 
 #pragma warning(push)
@@ -1079,6 +996,18 @@ namespace std
 }
 #pragma warning(pop)
 
+namespace std
+{
+	template<class> struct hash;
+#ifdef _M_X64
+	template<> struct hash<size_t> { size_t operator()(size_t const value) const { return value; } };
+	template<> struct hash<unsigned int> { size_t operator()(unsigned int const value) const { return value; } };
+#else
+	template<> struct hash<unsigned long long> { size_t operator()(unsigned long long const value) const { return value ^ (value >> (CHAR_BIT * sizeof(size_t))); } };
+	template<> struct hash<size_t> { size_t operator()(size_t const value) const { return value; } };
+#endif
+}
+
 #pragma push_macro("min")
 #pragma push_macro("max")
 #undef min
@@ -1090,8 +1019,9 @@ namespace std
 #ifndef _CPPLIB_VER
 namespace std
 {
-	template<class T> inline T const &min(T const &a, T const &b);
-	template<class T> inline T const &max(T const &a, T const &b);
+	template<class T> inline T const &min(T const &a, T const &b) { return b < a ? b : a; }
+	template<class T> inline T const &max(T const &a, T const &b) { return b < a ? a : b; }
+#define __MTA__
 }
 #endif
 #pragma pop_macro("max")
@@ -1266,13 +1196,26 @@ namespace std
 	template<size_t I, class Tuple> typename tuple_element<I, Tuple>::type &get(Tuple &tup) { return tuple_element<I, Tuple>::get(tup); }
 }
 
+template<class To, class From>
+inline To do_round(From value) { return static_cast<To>(value < From() ? ceil(value - static_cast<From>(0.5)) : floor(value + static_cast<From>(0.5))); }
+inline float round(float value) { return do_round<float, float>(value); }
+inline double round(double value) { return do_round<double, double>(value); }
+inline long double round(long double value) { return do_round<long double, long double>(value); }
+inline long lround(float value) { return do_round<long, float>(value); }
+inline long lround(double value) { return do_round<long, double>(value); }
+inline long lround(long double value) { return do_round<long, long double>(value); }
+inline long long llround(float value) { return do_round<long long, float>(value); }
+inline long long llround(double value) { return do_round<long long, double>(value); }
+inline long long llround(long double value) { return do_round<long long, long double>(value); }
+inline long long abs(long long const value) { return ::_abs64(value); }
 namespace std
 {
-	inline long long abs(long long const value) { return _abs64(value); }
-	template<class T, class Compare> T const &clamp(T const &v, T const &lo, T const &hi, Compare comp) { return comp(v, lo) ? lo : comp(hi, v) ? hi : v; }
-	template<class T> T const &clamp(T const &v, T const &lo, T const &hi) { return clamp(v, lo, hi, less<T>()); }
+	using ::abs;
+	using ::fabs;
+	using ::round;
+	using ::lround;
+	using ::llround;
 }
-using std::abs;
 
 #include <list>
 namespace std
@@ -1362,7 +1305,6 @@ namespace std
 #define _SCL_SECURE_VALIDATE_RANGE(cond)
 
 #undef  X_HAS_MOVE_SEMANTICS
-#endif
 
 // This should be AFTER all standard headers are included
 
@@ -1373,6 +1315,12 @@ namespace std
 {
 	typedef basic_string<char> string;
 	typedef basic_string<wchar_t> wstring;
+}
+
+namespace std
+{
+	using ::isalpha;
+	using ::isalnum;
 }
 
 
@@ -1455,6 +1403,7 @@ inline void EHVEC_CALEETYPE __ehvec_dtor(
 }
 #endif
 
+#include <eh.h>  // for _se_translator_function
 #pragma push_macro("_set_se_translator")
 extern "C" __inline _se_translator_function __cdecl __set_se_translator(_se_translator_function f)
 {
@@ -1471,7 +1420,4 @@ typedef unsigned int UINT;
 
 #pragma warning(pop)
 
-#ifdef __cplusplus_cli
-#pragma managed(pop)
-#endif
 #endif

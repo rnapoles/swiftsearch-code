@@ -15,6 +15,12 @@
 #endif
 
 #include <algorithm>
+#if defined(_MSC_VER) && _MSC_VER >= 1800  // We don't check _CPPLIB_VER here, because we want to use the <atomic> that came with the compiler, even if we use a different STL
+#include <atomic>
+#endif
+#if defined(_CPPLIB_VER) && _CPPLIB_VER >= 610
+#include <mutex>
+#endif
 #include <cassert>
 #include <map>
 #include <fstream>
@@ -398,96 +404,159 @@ HOOK_DEFINE(BOOL __stdcall, NtUserSetProp, (HWND hWnd, ATOM PropId, HANDLE value
 X(NtUserSetProp);
 #undef X
 
-class mutex
+namespace atomic_namespace
 {
-	void init()
+#ifdef _ATOMIC_
+	using namespace std;
+#else
+	enum memory_order
 	{
-#if defined(_WIN32)
-		InitializeCriticalSection(&p);
-#elif defined(_OPENMP) || defined(_OMP_LOCK_T)
-		omp_init_lock(&p);
-#endif
-	}
-	void term()
+		memory_order_relaxed,
+		memory_order_consume,
+		memory_order_acquire,
+		memory_order_release,
+		memory_order_acq_rel,
+		memory_order_seq_cst
+	};
+	struct atomic_flag
 	{
-#if defined(_WIN32)
-		DeleteCriticalSection(&p);
-#elif defined(_OPENMP) || defined(_OMP_LOCK_T)
-		omp_destroy_lock(&p);
+		long _value;
+		bool test_and_set(memory_order const order = memory_order_seq_cst) volatile { (void) order; return !!_interlockedbittestandset(&this->_value, 0); }
+		void clear(memory_order const order = memory_order_seq_cst) volatile { (void) order; _interlockedbittestandreset(&this->_value, 0); }
+	};
+	template<class T>
+	class atomic;
+	template<>
+	class atomic<bool>
+	{
+		typedef char storage_type;
+		typedef bool value_type;
+		storage_type value;
+	public:
+		atomic() { }
+		explicit atomic(value_type const value) : value(value) { }
+		value_type exchange(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return !!_InterlockedExchange8(const_cast<storage_type *>(&this->value), static_cast<storage_type>(value)); }
+		value_type load(memory_order const order = memory_order_seq_cst) const volatile { (void) order; return !!_InterlockedOr8(const_cast<storage_type *>(&this->value), storage_type()); }
+		value_type store(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return !!_InterlockedExchange8(const_cast<storage_type *>(&this->value), static_cast<storage_type>(value)); }
+	};
+	template<>
+	class atomic<unsigned int>
+	{
+		typedef long storage_type;
+		typedef unsigned int value_type;
+		storage_type value;
+	public:
+		atomic() { }
+		explicit atomic(value_type const value) : value(value) { }
+		value_type exchange(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return static_cast<value_type>(_InterlockedExchange(&this->value, static_cast<storage_type>(value))); }
+		value_type load(memory_order const order = memory_order_seq_cst) const volatile { (void) order; return static_cast<value_type>(_InterlockedOr(const_cast<storage_type volatile *>(&this->value), storage_type())); }
+		value_type store(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return static_cast<value_type>(_InterlockedExchange(&this->value, static_cast<storage_type>(value))); }
+		value_type fetch_add(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return static_cast<value_type>(_InterlockedExchangeAdd(&this->value, static_cast<storage_type>(value))); }
+		value_type fetch_sub(value_type const value, memory_order const order = memory_order_seq_cst) volatile { return this->fetch_add(value_type() - value, order); }
+	};
+
+	template<>
+	class atomic<unsigned long long>
+	{
+		typedef long long storage_type;
+		typedef unsigned long long value_type;
+		storage_type value;
+#ifdef _M_IX86
+		static storage_type _InterlockedOr64(storage_type volatile *const result, storage_type const value) { storage_type prev, curr; _ReadWriteBarrier(); do { prev = *result; curr = prev | value; } while (prev != _InterlockedCompareExchange64(result, curr, prev)); _ReadWriteBarrier(); return prev; }
+		static storage_type _InterlockedExchange64(storage_type volatile *const result, storage_type const value) { storage_type prev; _ReadWriteBarrier(); do { prev = *result; } while (prev != _InterlockedCompareExchange64(result, value, prev)); _ReadWriteBarrier();  return (prev); }
+		static storage_type _InterlockedExchangeAdd64(storage_type volatile *const result, storage_type const value) { storage_type prev, curr; _ReadWriteBarrier(); do { prev = *result; curr = prev + value; } while (prev != _InterlockedCompareExchange64(result, curr, prev)); _ReadWriteBarrier(); return prev; }
 #endif
-	}
-public:
-	mutex &operator =(mutex const &) { return *this; }
+	public:
+		atomic() { }
+		explicit atomic(value_type const value) : value(value) { }
+		value_type exchange(value_type const value, memory_order const order = memory_order_seq_cst) volatile { }
+		value_type load(memory_order const order = memory_order_seq_cst) const volatile { (void) order; return static_cast<value_type>(_InterlockedOr64(const_cast<storage_type volatile *>(&this->value), storage_type())); }
+		value_type store(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return static_cast<value_type>(_InterlockedExchange64(&this->value, static_cast<storage_type>(value))); }
+		value_type fetch_add(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return static_cast<value_type>(_InterlockedExchangeAdd64(&this->value, static_cast<storage_type>(value))); }
+		value_type fetch_sub(value_type const value, memory_order const order = memory_order_seq_cst) volatile { return this->fetch_add(value_type() - value, order); }
+	};
+#endif
+#ifndef _MUTEX_
+	template<class Mutex>
+	class unique_lock
+	{
+		Mutex *p;
+	public:
+		typedef Mutex mutex_type;
+		~unique_lock() { if (p) { p->unlock(); } }
+		unique_lock() : p() { }
+		explicit unique_lock(mutex_type *const mutex, bool const already_locked = false) : p(mutex) { if (p && !already_locked) { p->lock(); } }
+		explicit unique_lock(mutex_type &mutex, bool const already_locked = false) : p(&mutex) { if (!already_locked) { p->lock(); } }
+		unique_lock(unique_lock const &other) : p(other.p) { if (p) { p->lock(); } }
+		unique_lock &operator =(unique_lock other) { return this->swap(other), *this; }
+		void swap(unique_lock &other) { using std::swap; swap(this->p, other.p); }
+		friend void swap(unique_lock &a, unique_lock &b) { return a.swap(b); }
+		mutex_type *mutex() const { return this->p; }
+	};
+	class recursive_mutex
+	{
+		void init()
+		{
 #if defined(_WIN32)
-	CRITICAL_SECTION p;
+			InitializeCriticalSection(&p);
 #elif defined(_OPENMP) || defined(_OMP_LOCK_T)
-	omp_lock_t p;
+			omp_init_lock(&p);
+#endif
+		}
+		void term()
+		{
+#if defined(_WIN32)
+			DeleteCriticalSection(&p);
+#elif defined(_OPENMP) || defined(_OMP_LOCK_T)
+			omp_destroy_lock(&p);
+#endif
+		}
+	public:
+		recursive_mutex &operator =(recursive_mutex const &) { return *this; }
+#if defined(_WIN32)
+		CRITICAL_SECTION p;
+#elif defined(_OPENMP) || defined(_OMP_LOCK_T)
+		omp_lock_t p;
 #elif defined(BOOST_THREAD_MUTEX_HPP)
-	boost::mutex m;
+		boost::recursive_mutex m;
 #else
-	std::mutex m;
+		std::recursive_mutex m;
 #endif
-	mutex(mutex const &) { this->init(); }
-	mutex() { this->init(); }
-	~mutex() { this->term(); }
-	void lock()
-	{
+		recursive_mutex(recursive_mutex const &) { this->init(); }
+		recursive_mutex() { this->init(); }
+		~recursive_mutex() { this->term(); }
+		void lock()
+		{
 #if defined(_WIN32)
-		EnterCriticalSection(&p);
+			EnterCriticalSection(&p);
 #elif defined(_OPENMP) || defined(_OMP_LOCK_T)
-		omp_set_lock(&p);
+			omp_set_lock(&p);
 #else
-		return m.lock();
+			return m.lock();
 #endif
-	}
-	void unlock()
-	{
+		}
+		void unlock()
+		{
 #if defined(_WIN32)
-		LeaveCriticalSection(&p);
+			LeaveCriticalSection(&p);
 #elif defined(_OPENMP) || defined(_OMP_LOCK_T)
-		omp_unset_lock(&p);
+			omp_unset_lock(&p);
 #else
-		return m.unlock();
+			return m.unlock();
 #endif
-	}
-	bool try_lock()
-	{
+		}
+		bool try_lock()
+		{
 #if defined(_WIN32)
-		return !!TryEnterCriticalSection(&p);
+			return !!TryEnterCriticalSection(&p);
 #elif defined(_OPENMP) || defined(_OMP_LOCK_T)
-		return !!omp_test_lock(&p);
+			return !!omp_test_lock(&p);
 #else
-		return m.try_lock();
+			return m.try_lock();
 #endif
-	}
-};
-template<class Mutex>
-struct lock_guard
-{
-	typedef Mutex mutex_type;
-	mutex_type *p;
-	~lock_guard() { if (p) { p->unlock(); } }
-	lock_guard() : p() { }
-	explicit lock_guard(mutex_type *const mutex, bool const already_locked = false) : p(mutex) { if (p && !already_locked) { p->lock(); } }
-	explicit lock_guard(mutex_type &mutex, bool const already_locked = false) : p(&mutex) { if (!already_locked) { p->lock(); } }
-	lock_guard(lock_guard const &other) : p(other.p) { if (p) { p->lock(); } }
-	lock_guard &operator =(lock_guard other) { return this->swap(other), *this; }
-	void swap(lock_guard &other) { using std::swap; swap(this->p, other.p); }
-	friend void swap(lock_guard &a, lock_guard &b) { return a.swap(b); }
-};
-
-ATL::CWindow topmostWindow;
-mutex global_exception_mutex;
-
-long global_exception_handler(struct _EXCEPTION_POINTERS *ExceptionInfo)
-{
-	lock_guard<mutex> const guard(global_exception_mutex);
-	TCHAR buf[512];
-	_sntprintf(buf, sizeof(buf) / sizeof(*buf), _T("Apologies, but this program has encountered error 0x%lX.\r\n\r\nPLEASE tell me about this so I can try to fix it for you!\r\n\r\nIf you see OK, press OK.\r\nOtherwise:\r\n- Press Retry to attempt to handle the error (recommended)\r\n- Press Abort to quit\r\n- Press Ignore to continue (NOT recommended)"), ExceptionInfo->ExceptionRecord->ExceptionCode);
-	buf[sizeof(buf) / sizeof(*buf) - 1] = _T('\0');
-	int const r = MessageBox(topmostWindow.m_hWnd, buf, _T("Fatal Error"), MB_ICONERROR | ((ExceptionInfo->ExceptionRecord->ExceptionFlags & EXCEPTION_NONCONTINUABLE) ? MB_OK : MB_ABORTRETRYIGNORE) | MB_TASKMODAL);
-	if (r == IDABORT) { _exit(ExceptionInfo->ExceptionRecord->ExceptionCode); }
-	return r == IDIGNORE ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
+		}
+	};
+#endif
 }
 
 template<size_t N>
@@ -498,7 +567,33 @@ int safe_stprintf(TCHAR (&s)[N], TCHAR const *const format, ...)
 	va_start(args, format);
 	result = _vsntprintf(s, N - 1, format, args);
 	va_end(args);
-	if (result == N - 1) { s[result] = _T('\0'); }
+	if (result < 0) { s[0] = _T('\0'); }
+	else if (result == N - 1) { s[result] = _T('\0'); }
+	return result;
+}
+
+ATL::CWindow topmostWindow;
+atomic_namespace::recursive_mutex global_exception_mutex;
+
+long global_exception_handler(struct _EXCEPTION_POINTERS *ExceptionInfo)
+{
+	long result;
+	if (ExceptionInfo->ExceptionRecord->ExceptionCode == 0x40010006 /*DBG_PRINTEXCEPTION_C*/ ||
+		ExceptionInfo->ExceptionRecord->ExceptionCode == 0x4001000A /*DBG_PRINTEXCEPTION_WIDE_C*/ ||
+		ExceptionInfo->ExceptionRecord->ExceptionCode == 0xE06D7363 /*C++ exception*/ ||
+		ExceptionInfo->ExceptionRecord->ExceptionCode == RPC_S_SERVER_UNAVAILABLE)
+	{
+		result = EXCEPTION_CONTINUE_SEARCH;
+	}
+	else
+	{
+		atomic_namespace::unique_lock<atomic_namespace::recursive_mutex> const guard(global_exception_mutex);
+		TCHAR buf[512];
+		safe_stprintf(buf, _T("Apologies, but this program has encountered error 0x%lX.\r\n\r\nPLEASE tell me about this so I can try to fix it for you!\r\n\r\nIf you see OK, press OK.\r\nOtherwise:\r\n- Press Retry to attempt to handle the error (recommended)\r\n- Press Abort to quit\r\n- Press Ignore to continue (NOT recommended)"), ExceptionInfo->ExceptionRecord->ExceptionCode);
+		int const r = MessageBox(topmostWindow.m_hWnd, buf, _T("Fatal Error"), MB_ICONERROR | ((ExceptionInfo->ExceptionRecord->ExceptionFlags & EXCEPTION_NONCONTINUABLE) ? MB_OK : MB_ABORTRETRYIGNORE) | MB_TASKMODAL);
+		if (r == IDABORT) { _exit(ExceptionInfo->ExceptionRecord->ExceptionCode); }
+		result = r == IDIGNORE ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
+	}
 	return result;
 }
 
@@ -574,58 +669,52 @@ static void append_directional(std::tvstring &str, TCHAR const sz[], size_t cons
 	}
 }
 
+void CppRaiseException(unsigned long const error)
+{
+	struct _EXCEPTION_POINTERS *pExPtrs = NULL;
+	bool thrown = false;
+	int exCode = 0;
+	struct CppExceptionThrower { void operator()(int exCode, struct _EXCEPTION_POINTERS *pExPtrs) { throw CStructured_Exception(exCode, pExPtrs); } static bool assign(struct _EXCEPTION_POINTERS **to, struct _EXCEPTION_POINTERS *from) { *to = from; return true; } };
+	__try
+	{ ATL::_AtlRaiseException(error, 0); }
+	__except (CppExceptionThrower::assign(&pExPtrs, GetExceptionInformation()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+	{ exCode = GetExceptionCode(); thrown = true; }
+	if (thrown) { CppExceptionThrower()(exCode, pExPtrs); }
+}
+
+void CheckAndThrow(int const success) { if (!success) { CppRaiseException(GetLastError()); } }
+
+LPTSTR GetAnyErrorText(DWORD errorCode, va_list* pArgList = NULL)
+{
+	static TCHAR buffer[1 << 15];
+	ZeroMemory(buffer, sizeof(buffer));
+	if (!FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | (pArgList == NULL ? FORMAT_MESSAGE_IGNORE_INSERTS : 0), NULL, errorCode, 0, buffer, sizeof(buffer) / sizeof(*buffer), pArgList))
+	{
+		if (!FormatMessage(FORMAT_MESSAGE_FROM_HMODULE | (pArgList == NULL ? FORMAT_MESSAGE_IGNORE_INSERTS : 0), GetModuleHandle(_T("NTDLL.dll")), errorCode, 0, buffer, sizeof(buffer) / sizeof(*buffer), pArgList))
+		{ safe_stprintf(buffer, _T("%#lx"), errorCode); }
+	}
+	return buffer;
+}
+
 namespace winnt
 {
 	struct IO_STATUS_BLOCK { union { long Status; void *Pointer; }; uintptr_t Information; };
-
-	struct UNICODE_STRING
-	{
-		unsigned short Length, MaximumLength;
-		wchar_t *buffer_ptr;
-	};
-
-	struct OBJECT_ATTRIBUTES
-	{
-		unsigned long Length;
-		HANDLE RootDirectory;
-		UNICODE_STRING *ObjectName;
-		unsigned long Attributes;
-		void *SecurityDescriptor;
-		void *SecurityQualityOfService;
-	};
-
-	typedef VOID NTAPI IO_APC_ROUTINE(IN PVOID ApcContext, IN IO_STATUS_BLOCK *IoStatusBlock, IN ULONG Reserved);
 
 	enum IO_PRIORITY_HINT { IoPriorityVeryLow = 0, IoPriorityLow, IoPriorityNormal, IoPriorityHigh, IoPriorityCritical, MaxIoPriorityTypes };
 	struct FILE_FS_SIZE_INFORMATION { long long TotalAllocationUnits, ActualAvailableAllocationUnits; unsigned long SectorsPerAllocationUnit, BytesPerSector; };
 	struct FILE_FS_ATTRIBUTE_INFORMATION { unsigned long FileSystemAttributes; unsigned long MaximumComponentNameLength; unsigned long FileSystemNameLength; wchar_t FileSystemName[1]; };
 	union FILE_IO_PRIORITY_HINT_INFORMATION { IO_PRIORITY_HINT PriorityHint; unsigned long long _alignment; };
-	struct SYSTEM_TIMEOFDAY_INFORMATION { LARGE_INTEGER BootTime; LARGE_INTEGER CurrentTime; LARGE_INTEGER TimeZoneBias; ULONG TimeZoneId; ULONG Reserved; };
 	struct TIME_FIELDS { short Year; short Month; short Day; short Hour; short Minute; short Second; short Milliseconds; short Weekday; };
 
 	template<class T> struct identity { typedef T type; };
 	typedef long NTSTATUS;
-	enum _SYSTEM_INFORMATION_CLASS { };
 #define X(F, T) identity<T>::type &F = *reinterpret_cast<identity<T>::type *const &>(static_cast<FARPROC const &>(GetProcAddress(GetModuleHandle(_T("ntdll.dll")), #F)))
-	X(NtOpenFile, NTSTATUS NTAPI(OUT PHANDLE FileHandle, IN ACCESS_MASK DesiredAccess, IN OBJECT_ATTRIBUTES *ObjectAttributes, OUT IO_STATUS_BLOCK *IoStatusBlock, IN ULONG ShareAccess, IN ULONG OpenOptions));
 	X(NtQueryVolumeInformationFile, NTSTATUS NTAPI(HANDLE FileHandle, IO_STATUS_BLOCK *IoStatusBlock, PVOID FsInformation, unsigned long Length, unsigned long FsInformationClass));
 	X(NtQueryInformationFile, NTSTATUS NTAPI(IN HANDLE FileHandle, OUT IO_STATUS_BLOCK *IoStatusBlock, OUT PVOID FileInformation, IN ULONG Length, IN unsigned long FileInformationClass));
 	X(NtSetInformationFile, NTSTATUS NTAPI(IN HANDLE FileHandle, OUT IO_STATUS_BLOCK *IoStatusBlock, IN PVOID FileInformation, IN ULONG Length, IN unsigned long FileInformationClass));
-	X(RtlInitUnicodeString, VOID NTAPI(UNICODE_STRING *DestinationString, PCWSTR SourceString));
 	X(RtlNtStatusToDosError, unsigned long NTAPI(IN NTSTATUS NtStatus));
-	X(RtlSystemTimeToLocalTime, NTSTATUS NTAPI(IN LARGE_INTEGER const *SystemTime, OUT PLARGE_INTEGER LocalTime));
-	X(NtQuerySystemInformation, NTSTATUS NTAPI(IN enum _SYSTEM_INFORMATION_CLASS SystemInfoClass, OUT PVOID SystemInfoBuffer, IN ULONG SystemInfoBufferSize, OUT PULONG BytesReturned OPTIONAL));
 	X(RtlTimeToTimeFields, VOID NTAPI(LARGE_INTEGER *Time, TIME_FIELDS *TimeFields));
 #undef  X
-}
-
-LONGLONG RtlSystemTimeToLocalTime(LONGLONG systemTime)
-{
-	LARGE_INTEGER time2, localTime;
-	time2.QuadPart = systemTime;
-	long status = winnt::RtlSystemTimeToLocalTime(&time2, &localTime);
-	if (status != 0) { RaiseException(status, 0, 0, NULL); }
-	return localTime.QuadPart;
 }
 
 namespace ntfs
@@ -670,6 +759,7 @@ namespace ntfs
 		bool unfixup(size_t max_size)
 		{
 			unsigned short *usa = reinterpret_cast<unsigned short *>(&reinterpret_cast<unsigned char *>(this)[this->USAOffset]);
+			unsigned short const usa0 = usa[0];
 			bool result = true;
 			for (unsigned short i = 1; i < this->USACount; i++)
 			{
@@ -677,10 +767,7 @@ namespace ntfs
 				unsigned short *const check = (unsigned short *) ((unsigned char*)this + offset);
 				if (offset < max_size)
 				{
-					if (usa[0] != *check)
-					{
-						result = false;
-					}
+					result &= *check == usa0;
 					*check = usa[i];
 				}
 				else { break; }
@@ -822,6 +909,49 @@ namespace ntfs
 		unsigned short AttributeNumber;
 		unsigned short AlignmentOrReserved[3];
 	};
+	enum ReparseTypeFlags
+	{
+		ReparseIsMicrosoft = 0x80000000,
+		ReparseIsHighLatency = 0x40000000,
+		ReparseIsAlias = 0x20000000,
+		ReparseTagNSS = 0x68000005,
+		ReparseTagNSSRecover = 0x68000006,
+		ReparseTagSIS = 0x68000007,
+		ReparseTagSDFS = 0x68000008,
+		ReparseTagMountPoint = 0x88000003,
+		ReparseTagHSM = 0xA8000004,
+		ReparseTagSymbolicLink = 0xE8000000,
+		ReparseTagMountPoint2 = 0xA0000003,
+		ReparseTagSymbolicLink2 = 0xA000000C,
+		ReparseTagWofCompressed = 0x80000017,
+		ReparseTagWindowsContainerImage = 0x80000018,
+		ReparseTagGlobalReparse = 0x80000019,
+		ReparseTagAppExecLink = 0x8000001B,
+		ReparseTagCloud = 0x9000001A,
+		ReparseTagGVFS = 0x9000001C,
+		ReparseTagLinuxSymbolicLink = 0xA000001D,
+		// Lots more exist... see https://github.com/JFLarvoire/SysToolsLib/blob/master/C/MsvcLibX/include/reparsept.h
+	};
+	struct REPARSE_POINT
+	{
+		ReparseTypeFlags TypeFlags;
+		unsigned short DataLength;
+		unsigned short Padding;
+		// Reparse GUID follows if third-party
+		// Reparse data follows in all cases
+		void *begin() { return reinterpret_cast<void *>(reinterpret_cast<unsigned char *>(this) + sizeof(*this)); }
+		void const *begin() const { return reinterpret_cast<void const *>(reinterpret_cast<unsigned char const *>(this) + sizeof(*this)); }
+		void *end(size_t const max_buffer_size = ~size_t()) { return reinterpret_cast<unsigned char *>(this->begin()) + static_cast<ptrdiff_t>(this->DataLength); }
+		void const *end(size_t const max_buffer_size = ~size_t()) const { return reinterpret_cast<unsigned char const *>(this->begin()) + static_cast<ptrdiff_t>(this->DataLength); }
+	};
+	struct REPARSE_MOUNT_POINT_BUFFER
+	{
+		USHORT  SubstituteNameOffset;
+		USHORT  SubstituteNameLength;
+		USHORT  PrintNameOffset;
+		USHORT  PrintNameLength;
+		WCHAR  PathBuffer[1];
+	};
 	static struct { TCHAR const *data; size_t size; } attribute_names [] =
 	{
 #define X(S) { _T(S), sizeof(_T(S)) / sizeof(*_T(S)) - 1 }
@@ -927,20 +1057,6 @@ std::tstring GetDisplayName(HWND hWnd, const std::tstring &path, DWORD shgdn)
 		&& StrRetToBSTR(&ret, shidl, &bstr) == S_OK
 		) ? static_cast<LPCTSTR>(bstr) : std::tstring(basename(path.begin(), path.end()), path.end());
 	return result;
-}
-
-void CheckAndThrow(int const success) { if (!success) { unsigned long const last_error = GetLastError(); RaiseException(last_error, 0, 0, NULL); } }
-
-LPTSTR GetAnyErrorText(DWORD errorCode, va_list* pArgList = NULL)
-{
-	static TCHAR buffer[1 << 15];
-	ZeroMemory(buffer, sizeof(buffer));
-	if (!FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | (pArgList == NULL ? FORMAT_MESSAGE_IGNORE_INSERTS : 0), NULL, errorCode, 0, buffer, sizeof(buffer) / sizeof(*buffer), pArgList))
-	{
-		if (!FormatMessage(FORMAT_MESSAGE_FROM_HMODULE | (pArgList == NULL ? FORMAT_MESSAGE_IGNORE_INSERTS : 0), GetModuleHandle(_T("NTDLL.dll")), errorCode, 0, buffer, sizeof(buffer) / sizeof(*buffer), pArgList))
-		{ safe_stprintf(buffer, _T("%#lx"), errorCode); }
-	}
-	return buffer;
 }
 
 int LCIDToLocaleName_XPCompatible(LCID lcid, LPTSTR name, int name_length)
@@ -1049,8 +1165,9 @@ public:
 			winnt::NTSTATUS const status = winnt::NtSetInformationFile(reinterpret_cast<HANDLE>(volume), &iosb, &io_priority, sizeof(io_priority), 43);
 			if (status != 0 && status != 0xC0000003 /*STATUS_INVALID_INFO_CLASS*/ && status != 0xC0000008 /* STATUS_INVALID_HANDLE */ && status != 0xC0000024 /* STATUS_OBJECT_TYPE_MISMATCH */)
 			{
-				unsigned long const error = winnt::RtlNtStatusToDosError(status);
-				if (error) { SetLastError(error); CheckAndThrow(!error); }
+#ifdef _DEBUG
+				CppRaiseException(winnt::RtlNtStatusToDosError(status));
+#endif
 			}
 		}
 	}
@@ -1154,12 +1271,12 @@ unsigned int get_cluster_size(void *const volume)
 {
 	winnt::IO_STATUS_BLOCK iosb;
 	winnt::FILE_FS_SIZE_INFORMATION info = {};
-	if (winnt::NtQueryVolumeInformationFile(volume, &iosb, &info, sizeof(info), 3))
-	{ SetLastError(ERROR_INVALID_FUNCTION), CheckAndThrow(false); }
+	if (unsigned long const error = winnt::RtlNtStatusToDosError(winnt::NtQueryVolumeInformationFile(volume, &iosb, &info, sizeof(info), 3)))
+	{ CppRaiseException(error); }
 	return info.BytesPerSector * info.SectorsPerAllocationUnit;
 }
 
-std::vector<std::pair<unsigned long long, long long> > get_mft_retrieval_pointers(void *const root_dir, TCHAR const path[], long long *const size, long long const mft_start_lcn, unsigned int const file_record_size)
+std::vector<std::pair<unsigned long long, long long> > get_retrieval_pointers(TCHAR const path[], long long *const size, long long const mft_start_lcn, unsigned int const file_record_size)
 {
 	(void) mft_start_lcn;
 	(void) file_record_size;
@@ -1168,21 +1285,18 @@ std::vector<std::pair<unsigned long long, long long> > get_mft_retrieval_pointer
 	Handle handle;
 	if (path)
 	{
-		size_t const cch = path ? std::char_traits<TCHAR>::length(path) : 0;
-		winnt::UNICODE_STRING us = { static_cast<unsigned short>(cch * sizeof(*path)), static_cast<unsigned short>(cch * sizeof(*path)), const_cast<TCHAR *>(path) };
-		winnt::OBJECT_ATTRIBUTES oa = { sizeof(oa), root_dir, &us };
-		winnt::IO_STATUS_BLOCK iosb;
-		unsigned long const error = winnt::RtlNtStatusToDosError(winnt::NtOpenFile(&handle.value, FILE_READ_ATTRIBUTES | SYNCHRONIZE, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0x00200000 /* FILE_OPEN_REPARSE_POINT */));
-		if (error == ERROR_FILE_NOT_FOUND) { handle.value = NULL; /* do nothing */ }
-		else if (error) { SetLastError(error); CheckAndThrow(!error); }
+		HANDLE const opened = CreateFile(path, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_NO_BUFFERING, NULL);
+		unsigned long const error = opened != INVALID_HANDLE_VALUE ? ERROR_SUCCESS : GetLastError();
+		if (!error) { Handle(opened).swap(handle); }
+		else if (error == ERROR_FILE_NOT_FOUND) { /* do nothing */ }
+		else if (error) { CppRaiseException(error); }
 	}
-	void *const file = path ? handle : root_dir;
-	if (file)
+	if (handle)
 	{
 		result.resize(1 + (sizeof(RETRIEVAL_POINTERS_BUFFER) - 1) / sizeof(Result::value_type));
 		STARTING_VCN_INPUT_BUFFER input = {};
 		BOOL success;
-		for (unsigned long nr; !(success = DeviceIoControl(file, FSCTL_GET_RETRIEVAL_POINTERS, &input, sizeof(input), &*result.begin(), static_cast<unsigned long>(result.size()) * sizeof(*result.begin()), &nr, NULL), success) && GetLastError() == ERROR_MORE_DATA;)
+		for (unsigned long nr; !(success = DeviceIoControl(handle, FSCTL_GET_RETRIEVAL_POINTERS, &input, sizeof(input), &*result.begin(), static_cast<unsigned long>(result.size()) * sizeof(*result.begin()), &nr, NULL), success) && GetLastError() == ERROR_MORE_DATA;)
 		{
 			size_t const n = result.size();
 			Result(/* free old memory */).swap(result);
@@ -1192,7 +1306,7 @@ std::vector<std::pair<unsigned long long, long long> > get_mft_retrieval_pointer
 		if (size)
 		{
 			LARGE_INTEGER large_size;
-			CheckAndThrow(GetFileSizeEx(file, &large_size));
+			CheckAndThrow(GetFileSizeEx(handle, &large_size));
 			*size = large_size.QuadPart;
 		}
 		result.erase(result.begin() + 1 + reinterpret_cast<unsigned long const &>(*result.begin()), result.end());
@@ -1207,79 +1321,31 @@ template<class From, class To> struct propagate_const<From &, To> : propagate_co
 
 namespace atomic_namespace
 {
-	enum memory_order
+	class spin_lock : private atomic_flag
 	{
-		memory_order_relaxed,
-		memory_order_consume,
-		memory_order_acquire,
-		memory_order_release,
-		memory_order_acq_rel,
-		memory_order_seq_cst
+	public:
+		spin_lock() : atomic_flag() { }
+		void lock() { while (this->test_and_set()) {} }
+		void unlock() { this->clear(); }
 	};
+
 	template<class T>
-	class atomic
+	class spin_atomic
 	{
+		typedef spin_lock mutex;
+		typedef unique_lock<mutex> unique_lock_t;
 		mutex _mutex;
 		typedef T storage_type;
 		typedef T value_type;
 		storage_type value;
 	public:
-		atomic() { }
-		explicit atomic(value_type const &value) : value(value) { }
-		value_type exchange(value_type value, memory_order const order = memory_order_seq_cst) volatile { (void) order; lock_guard<mutex> const lock(const_cast<mutex &>(this->_mutex)); using std::swap; swap(const_cast<storage_type &>(this->value), value); return value; }
-		value_type load(memory_order const order = memory_order_seq_cst) const volatile { (void) order; lock_guard<mutex> const lock(const_cast<mutex &>(this->_mutex)); return const_cast<storage_type &>(this->value); }
-		value_type store(value_type const &value, memory_order const order = memory_order_seq_cst) volatile { (void) order; lock_guard<mutex> const lock(const_cast<mutex &>(this->_mutex)); const_cast<storage_type &>(this->value) = value; }
-		value_type fetch_add(value_type const &value, memory_order const order = memory_order_seq_cst) volatile { (void) order; lock_guard<mutex> const lock(const_cast<mutex &>(this->_mutex)); value_type old = const_cast<storage_type &>(this->value); const_cast<storage_type &>(this->value) += value; return old; }
-		value_type fetch_sub(value_type const &value, memory_order const order = memory_order_seq_cst) volatile { (void) order; lock_guard<mutex> const lock(const_cast<mutex &>(this->_mutex)); value_type old = const_cast<storage_type &>(this->value); const_cast<storage_type &>(this->value) -= value; return old; }
-	};
-	template<>
-	class atomic<bool>
-	{
-		typedef char storage_type;
-		typedef bool value_type;
-		storage_type value;
-	public:
-		atomic() { }
-		explicit atomic(value_type const value) : value(value) { }
-		value_type exchange(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return !!_InterlockedExchange8(const_cast<storage_type *>(&this->value), static_cast<storage_type>(value)); }
-		value_type load(memory_order const order = memory_order_seq_cst) const volatile { (void) order; return !!_InterlockedOr8(const_cast<storage_type *>(&this->value), storage_type()); }
-		value_type store(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return !!_InterlockedExchange8(const_cast<storage_type *>(&this->value), static_cast<storage_type>(value)); }
-	};
-	template<>
-	class atomic<unsigned int>
-	{
-		typedef long storage_type;
-		typedef unsigned int value_type;
-		storage_type value;
-	public:
-		atomic() { }
-		explicit atomic(value_type const value) : value(value) { }
-		value_type exchange(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return static_cast<value_type>(_InterlockedExchange(&this->value, static_cast<storage_type>(value))); }
-		value_type load(memory_order const order = memory_order_seq_cst) const volatile { (void) order; return static_cast<value_type>(_InterlockedOr(const_cast<storage_type volatile *>(&this->value), storage_type())); }
-		value_type store(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return static_cast<value_type>(_InterlockedExchange(&this->value, static_cast<storage_type>(value))); }
-		value_type fetch_add(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return static_cast<value_type>(_InterlockedExchangeAdd(&this->value, static_cast<storage_type>(value))); }
-		value_type fetch_sub(value_type const value, memory_order const order = memory_order_seq_cst) volatile { return this->fetch_add(value_type() - value, order); }
-	};
-
-	template<>
-	class atomic<unsigned long long>
-	{
-		typedef long long storage_type;
-		typedef unsigned long long value_type;
-		storage_type value;
-#ifdef _M_IX86
-		static storage_type _InterlockedOr64(storage_type volatile *const result, storage_type const value) { storage_type prev, curr; _ReadWriteBarrier(); do { prev = *result; curr = prev | value; } while (prev != _InterlockedCompareExchange64(result, curr, prev)); _ReadWriteBarrier(); return prev; }
-		static storage_type _InterlockedExchange64(storage_type volatile *const result, storage_type const value) { storage_type prev; _ReadWriteBarrier(); do { prev = *result; } while (prev != _InterlockedCompareExchange64(result, value, prev)); _ReadWriteBarrier();  return (prev); }
-		static storage_type _InterlockedExchangeAdd64(storage_type volatile *const result, storage_type const value) { storage_type prev, curr; _ReadWriteBarrier(); do { prev = *result; curr = prev + value; } while (prev != _InterlockedCompareExchange64(result, curr, prev)); _ReadWriteBarrier(); return prev; }
-#endif
-	public:
-		atomic() { }
-		explicit atomic(value_type const value) : value(value) { }
-		value_type exchange(value_type const value, memory_order const order = memory_order_seq_cst) volatile { }
-		value_type load(memory_order const order = memory_order_seq_cst) const volatile { (void) order; return static_cast<value_type>(_InterlockedOr64(const_cast<storage_type volatile *>(&this->value), storage_type())); }
-		value_type store(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return static_cast<value_type>(_InterlockedExchange64(&this->value, static_cast<storage_type>(value))); }
-		value_type fetch_add(value_type const value, memory_order const order = memory_order_seq_cst) volatile { (void) order; return static_cast<value_type>(_InterlockedExchangeAdd64(&this->value, static_cast<storage_type>(value))); }
-		value_type fetch_sub(value_type const value, memory_order const order = memory_order_seq_cst) volatile { return this->fetch_add(value_type() - value, order); }
+		spin_atomic() { }
+		explicit spin_atomic(value_type const &value) : value(value) { }
+		value_type exchange(value_type value, memory_order const order = memory_order_seq_cst) volatile { (void) order; unique_lock_t const lock(const_cast<mutex &>(this->_mutex)); using std::swap; swap(const_cast<storage_type &>(this->value), value); return value; }
+		value_type load(memory_order const order = memory_order_seq_cst) const volatile { (void) order; unique_lock_t const lock(const_cast<mutex &>(this->_mutex)); return const_cast<storage_type &>(this->value); }
+		void store(value_type const &value, memory_order const order = memory_order_seq_cst) volatile { (void) order; unique_lock_t const lock(const_cast<mutex &>(this->_mutex)); const_cast<storage_type &>(this->value) = value; }
+		value_type fetch_add(value_type const &value, memory_order const order = memory_order_seq_cst) volatile { (void) order; unique_lock_t const lock(const_cast<mutex &>(this->_mutex)); value_type old = const_cast<storage_type &>(this->value); const_cast<storage_type &>(this->value) += value; return old; }
+		value_type fetch_sub(value_type const &value, memory_order const order = memory_order_seq_cst) volatile { (void) order; unique_lock_t const lock(const_cast<mutex &>(this->_mutex)); value_type old = const_cast<storage_type &>(this->value); const_cast<storage_type &>(this->value) -= value; return old; }
 	};
 }
 
@@ -1547,23 +1613,38 @@ struct mutable_
 };
 
 template<class T>
-class lock_ptr : lock_guard<mutex>
+class lock_ptr : atomic_namespace::unique_lock<atomic_namespace::recursive_mutex>
 {
+	typedef atomic_namespace::unique_lock<atomic_namespace::recursive_mutex> base_type;
 	typedef lock_ptr this_type;
 	T *me;
 	lock_ptr(this_type const &);
 	this_type &operator =(this_type const &);
 public:
 	~lock_ptr() { }
-	lock_ptr(T volatile *const me, bool const do_lock = true) : lock_guard<mutex_type>(do_lock && me ? &me->get_mutex() : NULL), me(const_cast<T *>(me)) { }
-	lock_ptr(T *const me, bool const do_lock = false) : lock_guard<mutex_type>(do_lock && me ? me->get_mutex() : NULL), me(me) { }
-	lock_ptr() : lock_guard<mutex_type>(), me() { }
+	lock_ptr(T volatile *const me, bool const do_lock = true) : base_type(), me(const_cast<T *>(me))
+	{
+		if (do_lock && me)
+		{
+			base_type temp(me->get_mutex());
+			using std::swap; swap(temp, static_cast<base_type &>(*this));
+		}
+	}
+	lock_ptr(T *const me, bool const do_lock = true) : base_type(), me(me)
+	{
+		if (do_lock && me)
+		{
+			base_type temp(me->get_mutex());
+			using std::swap; swap(temp, static_cast<base_type &>(*this));
+		}
+	}
+	lock_ptr() : base_type(), me() { }
 	T *operator->() const { return me; }
 	T &operator *() const { return *me; }
 	void swap(this_type &other)
 	{
 		using std::swap;
-		swap(static_cast<lock_guard<mutex_type> &>(*this), static_cast<lock_guard<mutex_type> &>(other));
+		swap(static_cast<base_type &>(*this), static_cast<base_type &>(other));
 		swap(this->me, other.me);
 	}
 	this_type &init(T volatile *const me) { this_type(me).swap(*this); return *this; }
@@ -1692,7 +1773,7 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	};
 #pragma pack(pop)
 	friend struct std::is_scalar<Record>;
-	mutable mutex _mutex;
+	mutable atomic_namespace::recursive_mutex _mutex;
 	value_initialized<clock_t> _tbegin;
 	value_initialized<bool> _init_called, _failed;
 	std::tvstring _root_path;
@@ -1709,7 +1790,7 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	atomic_namespace::atomic<bool> _cancelled;
 	atomic_namespace::atomic<unsigned int> _records_so_far, _preprocessed_so_far;
 	std::vector<Speed> _perf_reports_circ /* circular buffer */; value_initialized<size_t> _perf_reports_begin;
-	atomic_namespace::atomic<Speed> _perf_avg_speed;
+	atomic_namespace::spin_atomic<Speed> _perf_avg_speed;
 #pragma pack(push, 1)
 	struct key_type_internal
 	{
@@ -1793,7 +1874,7 @@ public:
 	value_initialized<unsigned int> cluster_size;
 	value_initialized<unsigned int> mft_record_size;
 	value_initialized<unsigned int> mft_capacity;
-	NtfsIndex(std::tvstring value) : _root_path(value), _finished_event(CreateEvent(NULL, TRUE, FALSE, NULL)), _total_names_and_streams(0), _records_so_far(0), _preprocessed_so_far(0), _perf_reports_circ(1 << 6), _cancelled(false)
+	NtfsIndex(std::tvstring value) : _root_path(value), _finished_event(CreateEvent(NULL, TRUE, FALSE, NULL)), _total_names_and_streams(0), _records_so_far(0), _preprocessed_so_far(0), _perf_reports_circ(1 << 6), _cancelled(false), _perf_avg_speed(Speed())
 	{
 	}
 	~NtfsIndex()
@@ -1808,21 +1889,16 @@ public:
 		{
 			std::tvstring path_name = this->_root_path;
 			deldirsep(path_name);
-			std::tvstring ntpath = !path_name.empty() && *path_name.begin() != _T('\\') && *path_name.begin() != _T('/') ? _T("\\??\\") + path_name : path_name;
-			winnt::UNICODE_STRING us = { static_cast<unsigned short>(ntpath.size() * sizeof(*ntpath.begin())), static_cast<unsigned short>(ntpath.size() * sizeof(*ntpath.begin())), ntpath.empty() ? NULL : &*ntpath.begin() };
-			winnt::OBJECT_ATTRIBUTES oa = { sizeof(oa), NULL, &us };
+			if (!path_name.empty() && *path_name.begin() != _T('\\') && *path_name.begin() != _T('/')) { path_name.insert(static_cast<size_t>(0), _T("\\\\.\\")); }
+			Handle volume(CreateFile(path_name.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL));
 			winnt::IO_STATUS_BLOCK iosb;
-			Handle volume;
-			if (winnt::NtOpenFile(&volume.value, FILE_READ_ATTRIBUTES | FILE_READ_DATA | SYNCHRONIZE, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0) == 0)
-			{
-				struct : winnt::FILE_FS_ATTRIBUTE_INFORMATION { unsigned char buf[MAX_PATH]; } info = {};
-				if (winnt::NtQueryVolumeInformationFile(volume.value, &iosb, &info, sizeof(info), 5) ||
-					info.FileSystemNameLength != 4 * sizeof(*info.FileSystemName) || std::char_traits<TCHAR>::compare(info.FileSystemName, _T("NTFS"), 4))
-				{ throw std::invalid_argument("invalid volume"); }
-				if (false) { IoPriority::set(reinterpret_cast<uintptr_t>(volume.value), winnt::IoPriorityLow); }
-				volume.swap(this->_volume);
-				success = true;
-			}
+			struct : winnt::FILE_FS_ATTRIBUTE_INFORMATION { unsigned char buf[MAX_PATH]; } info = {};
+			if (winnt::NtQueryVolumeInformationFile(volume.value, &iosb, &info, sizeof(info), 5) ||
+				info.FileSystemNameLength != 4 * sizeof(*info.FileSystemName) || std::char_traits<TCHAR>::compare(info.FileSystemName, _T("NTFS"), 4))
+			{ throw std::invalid_argument("invalid volume"); }
+			if (false) { IoPriority::set(reinterpret_cast<uintptr_t>(volume.value), winnt::IoPriorityLow); }
+			volume.swap(this->_volume);
+			success = true;
 		}
 		catch (std::invalid_argument &) {}
 		this->_failed = !success;
@@ -1840,7 +1916,7 @@ public:
 	size_t records_so_far() const volatile { return this->_records_so_far.load(atomic_namespace::memory_order_acquire); }
 	size_t records_so_far() const { return this->_records_so_far.load(atomic_namespace::memory_order_relaxed); }
 	void *volume() const volatile { return this->_volume.value; }
-	mutex &get_mutex() const volatile { return this->unvolatile()->_mutex; }
+	atomic_namespace::recursive_mutex &get_mutex() const volatile { return this->unvolatile()->_mutex; }
 	Speed speed() const volatile
 	{
 		Speed total;
@@ -1884,21 +1960,61 @@ public:
 		}
 		catch (std::bad_alloc &) { }
 	}
+	void preload_concurrent(unsigned long long const virtual_offset, void *const buffer, size_t const size) volatile
+	{
+		unsigned int max_frs_plus_one = 0;
+		unsigned int const mft_record_size = this->mft_record_size;
+		unsigned int mft_record_size_log2 = 0;
+		for (;;) { unsigned int const v = mft_record_size_log2 + 1; if (!(mft_record_size >> v)) { break; } mft_record_size_log2 = v; }
+		assert((1U << mft_record_size_log2) == mft_record_size && "MFT record size not a power of 2");
+		unsigned int const mft_record_size_pow2_mod_mask = mft_record_size - 1;
+		for (size_t i = virtual_offset & mft_record_size_pow2_mod_mask /* this should only occur if cluster size < MFT record size */ ? mft_record_size - virtual_offset & mft_record_size_pow2_mod_mask : 0;
+			i + mft_record_size <= size;
+			i += mft_record_size)
+		{
+			unsigned int const frs = static_cast<unsigned int>((virtual_offset + i) >> mft_record_size_log2);
+			ntfs::FILE_RECORD_SEGMENT_HEADER *const frsh = reinterpret_cast<ntfs::FILE_RECORD_SEGMENT_HEADER *>(&static_cast<unsigned char *>(buffer)[i]);
+			if (frsh->MultiSectorHeader.Magic == 'ELIF')
+			{
+				if (frsh->MultiSectorHeader.unfixup(mft_record_size))
+				{
+					unsigned int const frs_base = frsh->BaseFileRecordSegment ? static_cast<unsigned int>(frsh->BaseFileRecordSegment) : frs;
+					if (max_frs_plus_one < frs_base + 1) { max_frs_plus_one = frs_base + 1; }
+				}
+				else
+				{
+					frsh->MultiSectorHeader.Magic = 'DAAB';
+				}
+			}
+		}
+		if (max_frs_plus_one > 0)
+		{
+			// Ensure the vector is only reallocated once this iteration, if possible
+			lock(this)->at(max_frs_plus_one - 1);
+		}
+	}
 	void load(unsigned long long const virtual_offset, void *const buffer, size_t const size, unsigned long long const skipped_begin, unsigned long long const skipped_end)
 	{
-		if (size % this->mft_record_size)
+		unsigned int const mft_record_size = this->mft_record_size;
+		unsigned int mft_record_size_log2 = 0;
+		for (;;) { unsigned int const v = mft_record_size_log2 + 1; if (!(mft_record_size >> v)) { break; } mft_record_size_log2 = v; }
+		assert((1U << mft_record_size_log2) == mft_record_size && "MFT record size not a power of 2");
+		unsigned int const mft_record_size_pow2_mod_mask = mft_record_size - 1;
+		if (size % mft_record_size)
 		{ throw std::runtime_error("Cluster size is smaller than MFT record size; split MFT records (over multiple clusters) not supported. Defragmenting your MFT may sometimes avoid this condition."); }
-		if (skipped_begin || skipped_end) { this->_records_so_far.fetch_add(static_cast<unsigned int>((skipped_begin + skipped_end) / this->mft_record_size)); }
+		if (skipped_begin || skipped_end) { this->_records_so_far.fetch_add(static_cast<unsigned int>((skipped_begin + skipped_end) >> mft_record_size_log2)); }
 		ChildInfo const empty_child_info;
-		for (size_t i = virtual_offset % this->mft_record_size ? this->mft_record_size - virtual_offset % this->mft_record_size : 0; i + this->mft_record_size <= size; i += this->mft_record_size, this->_records_so_far.fetch_add(1, atomic_namespace::memory_order_acq_rel))
+		for (size_t i = virtual_offset & mft_record_size_pow2_mod_mask /* this should only occur if cluster size < MFT record size */ ? mft_record_size - virtual_offset & mft_record_size_pow2_mod_mask : 0;
+			i + mft_record_size <= size;
+			i += mft_record_size, this->_records_so_far.fetch_add(1, atomic_namespace::memory_order_acq_rel))
 		{
-			unsigned int const frs = static_cast<unsigned int>((virtual_offset + i) / this->mft_record_size);
+			unsigned int const frs = static_cast<unsigned int>((virtual_offset + i) >> mft_record_size_log2);
 			ntfs::FILE_RECORD_SEGMENT_HEADER *const frsh = reinterpret_cast<ntfs::FILE_RECORD_SEGMENT_HEADER *>(&static_cast<unsigned char *>(buffer)[i]);
-			if (frsh->MultiSectorHeader.Magic == 'ELIF' && frsh->MultiSectorHeader.unfixup(this->mft_record_size) && !!(frsh->Flags & ntfs::FRH_IN_USE))
+			if (frsh->MultiSectorHeader.Magic == 'ELIF' && !!(frsh->Flags & ntfs::FRH_IN_USE))
 			{
 				unsigned int const frs_base = frsh->BaseFileRecordSegment ? static_cast<unsigned int>(frsh->BaseFileRecordSegment) : frs;
 				Records::iterator base_record = this->at(frs_base);
-				void const *const frsh_end = frsh->end(this->mft_record_size);
+				void const *const frsh_end = frsh->end(mft_record_size);
 				for (ntfs::ATTRIBUTE_RECORD_HEADER const
 					*ah = frsh->begin(); ah < frsh_end && ah->Type != ntfs::AttributeTypeCode() && ah->Type != ntfs::AttributeEnd; ah = ah->next())
 				{
@@ -2087,16 +2203,15 @@ public:
 		if (finished && !this->_root_path.empty())
 		{
 			TCHAR buf[2048];
-			size_t names_wasted_bytes = 0;
+			size_t names_wasted_chars = 0;
 			for (size_t i = 0; i != this->names.size(); ++i)
 			{
 				if ((this->names[i] | SCHAR_MAX) == SCHAR_MAX)
 				{
-					++names_wasted_bytes;
+					++names_wasted_chars;
 				}
 			}
-			int const nbuf = _sntprintf(buf,
-				sizeof(buf) / sizeof(*buf),
+			int const nbuf = safe_stprintf(buf,
 				_T("%s\trecords_data\twidth = %2u\tsize = %8I64u\tcapacity = %8I64u\n")
 				_T("%s\trecords_lookup\twidth = %2u\tsize = %8I64u\tcapacity = %8I64u\n")
 				_T("%s\tnames\twidth = %2u\tsize = %8I64u\tcapacity = %8I64u\t%8I64u bytes wasted\n")
@@ -2105,11 +2220,10 @@ public:
 				_T("%s\tchildinfos\twidth = %2u\tsize = %8I64u\tcapacity = %8I64u\n"),
 				this->_root_path.c_str(), static_cast<unsigned>(sizeof(*this->records_data  .begin())), static_cast<unsigned long long>(this->records_data  .size()), static_cast<unsigned long long>(this->records_data  .capacity()),
 				this->_root_path.c_str(), static_cast<unsigned>(sizeof(*this->records_lookup.begin())), static_cast<unsigned long long>(this->records_lookup.size()), static_cast<unsigned long long>(this->records_lookup.capacity()),
-				this->_root_path.c_str(), static_cast<unsigned>(sizeof(*this->names         .begin())), static_cast<unsigned long long>(this->names         .size()), static_cast<unsigned long long>(this->names         .capacity()), static_cast<unsigned long long>(names_wasted_bytes),
+				this->_root_path.c_str(), static_cast<unsigned>(sizeof(*this->names         .begin())), static_cast<unsigned long long>(this->names         .size()), static_cast<unsigned long long>(this->names         .capacity()), static_cast<unsigned long long>(names_wasted_chars),
 				this->_root_path.c_str(), static_cast<unsigned>(sizeof(*this->nameinfos     .begin())), static_cast<unsigned long long>(this->nameinfos     .size()), static_cast<unsigned long long>(this->nameinfos     .capacity()),
 				this->_root_path.c_str(), static_cast<unsigned>(sizeof(*this->streaminfos   .begin())), static_cast<unsigned long long>(this->streaminfos   .size()), static_cast<unsigned long long>(this->streaminfos   .capacity()),
 				this->_root_path.c_str(), static_cast<unsigned>(sizeof(*this->childinfos    .begin())), static_cast<unsigned long long>(this->childinfos    .size()), static_cast<unsigned long long>(this->childinfos    .capacity()));
-			buf[sizeof(buf) / sizeof(*buf) - 1] = _T('\0');
 			if (nbuf > 0) { OutputDebugString(buf); }
 			struct
 			{
@@ -2140,6 +2254,7 @@ public:
 						}
 						std::make_heap(scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size), scratch.end());
 						unsigned long long const threshold = children_size.allocated / 100;
+						// Algorithm: All files whose sizes are < X% of the current folder's size are assumed to contribute to the folder's bulkiness.
 						for (Scratch::iterator i = scratch.end(); i != scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size); )
 						{
 							std::pop_heap(scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size), i);
@@ -2150,9 +2265,20 @@ public:
 						result = children_size;
 						for (StreamInfos::value_type *k = me->streaminfo(fr); k; k = me->streaminfo(k->next_entry))
 						{
-							result.length += k->length * (name_info + 1) / total_names - k->length * name_info / total_names;
-							result.allocated += k->allocated * (name_info + 1) / total_names - k->allocated * name_info / total_names;
-							result.bulkiness += k->bulkiness * (name_info + 1) / total_names - k->bulkiness * name_info / total_names;
+							struct Accumulator
+							{
+								static unsigned long long delta_impl(unsigned long long const value, unsigned short const i, unsigned short const n)
+								{
+									return value * (i + 1) / n - value * i / n;
+								}
+								static unsigned long long delta(unsigned long long const value, unsigned short const i, unsigned short const n)
+								{
+									return n != 1 ? n != 2 ? delta_impl(value, i, n) : i != 1 ? delta_impl(value, ((void)(assert(i == 0)), 0), n) : delta_impl(value, i, n) : delta_impl(value, ((void)(assert(i == 0)), 0), n);
+								}
+							};
+							result.length += Accumulator::delta(k->length, name_info, total_names);
+							result.allocated += Accumulator::delta(k->allocated, name_info, total_names);
+							result.bulkiness += Accumulator::delta(k->bulkiness, name_info, total_names);
 							result.treesize += 1;
 							if (!k->type_name_id)
 							{
@@ -2576,6 +2702,16 @@ public:
 	HRESULT hr;
 	CoInit(bool initialize = true) : hr(initialize ? CoInitialize(NULL) : S_FALSE) { }
 	~CoInit() { if (this->hr == S_OK) { CoUninitialize(); } }
+};
+
+class OleInit
+{
+	OleInit(OleInit const &) : hr(S_FALSE) { }
+	OleInit &operator =(OleInit const &) { }
+public:
+	HRESULT hr;
+	OleInit(bool initialize = true) : hr(initialize ? OleInitialize(NULL) : S_FALSE) { }
+	~OleInit() { if (this->hr == S_OK) { OleUninitialize(); } }
 };
 
 #ifdef WM_SETREDRAW
@@ -3184,7 +3320,7 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 			}
 			else
 			{
-				RaiseException(GetLastError(), 0, 0, NULL);
+				CppRaiseException(result == WAIT_FAILED ? GetLastError() : result);
 			}
 		}
 	}
@@ -3330,7 +3466,7 @@ public:
 	}
 };
 
-class IoCompletionPort : public RefCounted<IoCompletionPort>
+class IoCompletionPort
 {
 	typedef IoCompletionPort this_type;
 	IoCompletionPort(this_type const &);
@@ -3338,11 +3474,20 @@ class IoCompletionPort : public RefCounted<IoCompletionPort>
 	struct Task
 	{
 		HANDLE file;
+		unsigned long issuing_thread_id;
 		void *buffer;
 		unsigned long cb;
 		intrusive_ptr<Overlapped> overlapped;
 		Task() : file(), buffer(), cb() { }
 		explicit Task(void *const buffer, unsigned long const cb, intrusive_ptr<Overlapped> const &overlapped) : buffer(buffer), cb(cb), overlapped(overlapped) { }
+	};
+	struct WorkerThread
+	{
+		Handle handle;
+		~WorkerThread()
+		{
+			WaitForSingleObject(this->handle, INFINITE);
+		}
 	};
 	typedef std::vector<Task> Pending;
 	static unsigned int CALLBACK iocp_worker(void *me)
@@ -3371,9 +3516,13 @@ class IoCompletionPort : public RefCounted<IoCompletionPort>
 		}
 		else
 		{
+#ifdef _DEBUG
+			num_threads = 1;
+#else
 			SYSTEM_INFO sysinfo;
 			GetSystemInfo(&sysinfo);
 			num_threads = sysinfo.dwNumberOfProcessors;
+#endif
 		}
 #endif
 		return num_threads;
@@ -3427,7 +3576,11 @@ class IoCompletionPort : public RefCounted<IoCompletionPort>
 					this->enqueue(task);
 				}
 			}
-			else if (key == 0) { break; }
+			else if (key == 0)
+			{
+				this->cancel_thread_ios();
+				break;
+			}
 		}
 		return 0;
 	}
@@ -3443,10 +3596,23 @@ class IoCompletionPort : public RefCounted<IoCompletionPort>
 			task.overlapped.detach();
 		}
 	}
+	void cancel_thread_ios() volatile  // Requests cancellation of all I/Os initiated by the current thread
+	{
+		lock_ptr<this_type> const me_lock(this);
+		Pending &pending = const_cast<Pending &>(this->_pending);
+		unsigned long const thread_id = GetCurrentThreadId();
+		for (size_t i = 0; i != pending.size(); ++i)
+		{
+			if (pending[i].issuing_thread_id == thread_id)
+			{
+				CancelIo(pending[i].file);
+			}
+		}
+	}
 	Handle _handle;
 	atomic_namespace::atomic<bool> _initialized;
-	std::vector<uintptr_t> _threads;
-	mutable mutex _mutex;
+	std::vector<WorkerThread> _threads;
+	mutable atomic_namespace::recursive_mutex _mutex;
 	Pending _pending;
 	size_t _pending_scan_offset;
 public:
@@ -3454,15 +3620,17 @@ public:
 	IoCompletionPort() : _handle(CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0)), _initialized(false), _pending_scan_offset() { }
 	this_type *unvolatile() volatile { return const_cast<this_type *>(this); }
 	this_type const *unvolatile() const volatile { return const_cast<this_type *>(this); }
-	mutex &get_mutex() const volatile { return this->unvolatile()->_mutex; }
+	atomic_namespace::recursive_mutex &get_mutex() const volatile { return this->unvolatile()->_mutex; }
 	void ensure_initialized()
 	{
 		if (this->_threads.empty())
 		{
-			for (size_t i = static_cast<size_t>(get_num_threads()); i != 0; --i)
+			size_t const nthreads = static_cast<size_t>(get_num_threads());
+			this->_threads.resize(nthreads);
+			for (size_t i = nthreads; i != 0 && ((void)--i, true); )
 			{
 				unsigned int id;
-				this->_threads.push_back(_beginthreadex(NULL, 0, iocp_worker, this, 0, &id));
+				Handle(reinterpret_cast<HANDLE>(_beginthreadex(NULL, 0, iocp_worker, this, 0, &id))).swap(this->_threads.at(i).handle);
 			}
 			this->_initialized.store(true, atomic_namespace::memory_order_release);
 		}
@@ -3489,6 +3657,7 @@ public:
 			pending.push_back(Task());
 			Task &task = pending.back();
 			task.file = file;
+			task.issuing_thread_id = GetCurrentThreadId();
 			task.buffer = buffer;
 			task.cb = cb;
 			task.overlapped = overlapped;
@@ -3500,18 +3669,12 @@ public:
 		this->ensure_initialized();
 		CheckAndThrow(!!CreateIoCompletionPort(file, this->_handle, key, 0));
 	}
-	void close() volatile { return lock(this)->close(); }
 	void close()
 	{
 		for (size_t i = 0; i != this->_threads.size(); ++i)
 		{ this->post(0, 0, NULL); }
-		while (!this->_threads.empty())
-		{
-			size_t n = std::min(this->_threads.size(), static_cast<size_t>(MAXIMUM_WAIT_OBJECTS));
-			WaitForMultipleObjects(static_cast<unsigned long>(n), reinterpret_cast<void *const *>(&*this->_threads.begin() + this->_threads.size() - n), TRUE, INFINITE);
-			while (n) { this->_threads.pop_back(); --n; }
-		}
-		this->_initialized.store(false, atomic_namespace::memory_order_release);
+		this->cancel_thread_ios();
+		this->_threads.clear();  // Destructors ensure all threads terminate
 	}
 };
 
@@ -3536,7 +3699,7 @@ class OverlappedNtfsMftReadPayload : public Overlapped
 	};
 	typedef std::vector<RetPtr> RetPtrs;
 	typedef std::vector<unsigned char> Bitmap;
-	intrusive_ptr<IoCompletionPort volatile> iocp;
+	IoCompletionPort volatile *iocp;
 	HWND m_hWnd;
 	Handle closing_event;
 	RetPtrs bitmap_ret_ptrs, data_ret_ptrs;
@@ -3551,8 +3714,8 @@ public:
 	~OverlappedNtfsMftReadPayload()
 	{
 	}
-	OverlappedNtfsMftReadPayload(intrusive_ptr<IoCompletionPort> const &iocp, intrusive_ptr<NtfsIndex volatile> p, HWND const m_hWnd, Handle const &closing_event)
-		: Overlapped(), iocp(iocp), m_hWnd(m_hWnd), closing_event(closing_event), valid_records(0), cluster_size(), read_block_size(1 << 20), jbitmap(0), nbitmap_chunks_left(0), jdata(0)
+	OverlappedNtfsMftReadPayload(IoCompletionPort volatile &iocp, intrusive_ptr<NtfsIndex volatile> p, HWND const m_hWnd, Handle const &closing_event)
+		: Overlapped(), iocp(&iocp), m_hWnd(m_hWnd), closing_event(closing_event), valid_records(0), cluster_size(), read_block_size(1 << 20), jbitmap(0), nbitmap_chunks_left(0), jdata(0)
 	{
 		using std::swap; swap(p, this->p);
 	}
@@ -3563,7 +3726,7 @@ class OverlappedNtfsMftReadPayload::ReadOperation : public Overlapped
 {
 	unsigned long long _voffset, _skipped_begin, _skipped_end;
 	clock_t _time;
-	static mutex recycled_mutex;
+	static atomic_namespace::recursive_mutex recycled_mutex;
 	static std::vector<std::pair<size_t, void *> > recycled;
 	bool _is_bitmap;
 	intrusive_ptr<OverlappedNtfsMftReadPayload volatile> q;
@@ -3573,7 +3736,7 @@ class OverlappedNtfsMftReadPayload::ReadOperation : public Overlapped
 		if (true)
 		{
 			{
-				lock_guard<mutex> guard(recycled_mutex);
+				atomic_namespace::unique_lock<atomic_namespace::recursive_mutex> guard(recycled_mutex);
 				size_t ifound = recycled.size();
 				for (size_t i = 0; i != recycled.size(); ++i)
 				{
@@ -3606,7 +3769,7 @@ public:
 	{
 		if (true)
 		{
-			lock_guard<mutex>(recycled_mutex), recycled.push_back(std::pair<size_t, void *>(_msize(p), p));
+			atomic_namespace::unique_lock<atomic_namespace::recursive_mutex>(recycled_mutex), recycled.push_back(std::pair<size_t, void *>(_msize(p), p));
 		}
 		else
 		{
@@ -3678,7 +3841,6 @@ public:
 						{
 							size_t const j = irecord + nrecords - 1 - skip_records_end, j1 = j / records_per_bitmap_word, j2 = j % records_per_bitmap_word;
 							if (q->mft_bitmap[j1] & (1 << j2)) { break; }
-							skip_records_end = skip_records_end;
 						}
 						size_t
 							skip_clusters_begin = static_cast<size_t>(static_cast<unsigned long long>(skip_records_begin) * q->p->mft_record_size / q->cluster_size),
@@ -3691,7 +3853,9 @@ public:
 			}
 			else
 			{
-				lock(q->p)->load(this->voffset(), buffer, size, this->skipped_begin(), this->skipped_end());
+				unsigned long long const virtual_offset = this->voffset();
+				q->p->preload_concurrent(virtual_offset, buffer, size);
+				lock(q->p)->load(virtual_offset, buffer, size, this->skipped_begin(), this->skipped_end());
 			}
 			{
 				lock(q->p)->report_speed(size, this->time(), clock());
@@ -3700,7 +3864,7 @@ public:
 		return -1;
 	}
 };
-mutex OverlappedNtfsMftReadPayload::ReadOperation::recycled_mutex;
+atomic_namespace::recursive_mutex OverlappedNtfsMftReadPayload::ReadOperation::recycled_mutex;
 std::vector<std::pair<size_t, void *> > OverlappedNtfsMftReadPayload::ReadOperation::recycled;
 
 void OverlappedNtfsMftReadPayload::queue_next() volatile
@@ -3760,76 +3924,83 @@ void OverlappedNtfsMftReadPayload::queue_next() volatile
 }
 int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t const key)
 {
+	TCHAR const *last_action = _T("");
 	int result = -1;
 	intrusive_ptr<NtfsIndex> p = this->p->unvolatile();
 	if (!p->init_called())
 	{
+		last_action = _T("opening volume");
 		p->init();
 	}
-	if (void *const volume = p->volume())
+	try
 	{
-		DEV_BROADCAST_HANDLE dev = { sizeof(dev), DBT_DEVTYP_HANDLE, 0, volume, reinterpret_cast<HDEVNOTIFY>(this->m_hWnd) };
-		dev.dbch_hdevnotify = RegisterDeviceNotification(this->m_hWnd, &dev, DEVICE_NOTIFY_WINDOW_HANDLE);
-		unsigned long br;
-		NTFS_VOLUME_DATA_BUFFER info;
-		CheckAndThrow(DeviceIoControl(volume, FSCTL_GET_NTFS_VOLUME_DATA, NULL, 0, &info, sizeof(info), &br, NULL));
-		this->cluster_size = static_cast<unsigned int>(info.BytesPerCluster);
-		p->cluster_size = info.BytesPerCluster;
-		p->mft_record_size = info.BytesPerFileRecordSegment;
-		p->mft_capacity = static_cast<unsigned int>(info.MftValidDataLength.QuadPart / info.BytesPerFileRecordSegment);
-		this->iocp->associate(volume, reinterpret_cast<uintptr_t>(&*p));
-		typedef std::vector<std::pair<unsigned long long, long long> > RP;
+		if (void *const volume = p->volume())
 		{
-			Handle root_dir;
+			DEV_BROADCAST_HANDLE dev = { sizeof(dev), DBT_DEVTYP_HANDLE, 0, volume, reinterpret_cast<HDEVNOTIFY>(this->m_hWnd) };
+			dev.dbch_hdevnotify = RegisterDeviceNotification(this->m_hWnd, &dev, DEVICE_NOTIFY_WINDOW_HANDLE);
+			unsigned long br;
+			NTFS_VOLUME_DATA_BUFFER info;
+			last_action = _T("reading NTFS volume data");
+			CheckAndThrow(DeviceIoControl(volume, FSCTL_GET_NTFS_VOLUME_DATA, NULL, 0, &info, sizeof(info), &br, NULL));
+			this->cluster_size = static_cast<unsigned int>(info.BytesPerCluster);
+			p->cluster_size = info.BytesPerCluster;
+			p->mft_record_size = info.BytesPerFileRecordSegment;
+			p->mft_capacity = static_cast<unsigned int>(info.MftValidDataLength.QuadPart / info.BytesPerFileRecordSegment);
+			this->iocp->associate(volume, reinterpret_cast<uintptr_t>(&*p));
+			typedef std::vector<std::pair<unsigned long long, long long> > RP;
 			{
-				unsigned long long root_dir_id = 0x0005000000000005;
-				winnt::UNICODE_STRING us = { sizeof(root_dir_id), sizeof(root_dir_id), reinterpret_cast<wchar_t *>(&root_dir_id) };
-				winnt::OBJECT_ATTRIBUTES oa = { sizeof(oa), volume, &us };
-				winnt::IO_STATUS_BLOCK iosb;
-				unsigned long const error = winnt::RtlNtStatusToDosError(winnt::NtOpenFile(&root_dir.value, FILE_READ_ATTRIBUTES | SYNCHRONIZE, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0x00002000 /* FILE_OPEN_BY_FILE_ID */));
-				if (error) { SetLastError(error); CheckAndThrow(!error); }
-			}
-			{
-				long long llsize = 0;
-				RP const ret_ptrs = get_mft_retrieval_pointers(root_dir, _T("$MFT::$BITMAP"), &llsize, info.MftStartLcn.QuadPart, this->p->mft_record_size);
-				unsigned long long prev_vcn = 0;
-				for (RP::const_iterator i = ret_ptrs.begin(); i != ret_ptrs.end(); ++i)
 				{
-					long long const clusters_left = static_cast<long long>(std::max(i->first, prev_vcn) - prev_vcn);
-					unsigned long long n;
-					for (long long m = 0; m < clusters_left; m += static_cast<long long>(n))
+					last_action = _T("reading $MFT::$BITMAP");
+					long long llsize = 0;
+					RP const ret_ptrs = get_retrieval_pointers((p->root_path() + std::tvstring(_T("$MFT::$BITMAP"))).c_str(), &llsize, info.MftStartLcn.QuadPart, this->p->mft_record_size);
+					unsigned long long prev_vcn = 0;
+					for (RP::const_iterator i = ret_ptrs.begin(); i != ret_ptrs.end(); ++i)
 					{
-						n = std::min(i->first - prev_vcn, 1 + (static_cast<unsigned long long>(this->read_block_size) - 1) / this->cluster_size);
-						this->bitmap_ret_ptrs.push_back(RetPtrs::value_type(prev_vcn, n, i->second + m));
-						prev_vcn += n;
+						long long const clusters_left = static_cast<long long>(std::max(i->first, prev_vcn) - prev_vcn);
+						unsigned long long n;
+						for (long long m = 0; m < clusters_left; m += static_cast<long long>(n))
+						{
+							n = std::min(i->first - prev_vcn, 1 + (static_cast<unsigned long long>(this->read_block_size) - 1) / this->cluster_size);
+							this->bitmap_ret_ptrs.push_back(RetPtrs::value_type(prev_vcn, n, i->second + m));
+							prev_vcn += n;
+						}
 					}
+					this->mft_bitmap.resize(static_cast<size_t>(llsize), static_cast<Bitmap::value_type>(~Bitmap::value_type()) /* default should be to read unused slots too */);
+					this->nbitmap_chunks_left.store(this->bitmap_ret_ptrs.size(), atomic_namespace::memory_order_release);
 				}
-				this->mft_bitmap.resize(static_cast<size_t>(llsize), static_cast<Bitmap::value_type>(~Bitmap::value_type()) /* default should be to read unused slots too */);
-				this->nbitmap_chunks_left.store(this->bitmap_ret_ptrs.size(), atomic_namespace::memory_order_release);
-			}
-			{
-				long long llsize = 0;
-				RP const ret_ptrs = get_mft_retrieval_pointers(root_dir, _T("$MFT::$DATA"), &llsize, info.MftStartLcn.QuadPart, p->mft_record_size);
-				unsigned long long prev_vcn = 0;
-				for (RP::const_iterator i = ret_ptrs.begin(); i != ret_ptrs.end(); ++i)
 				{
-					long long const clusters_left = static_cast<long long>(std::max(i->first, prev_vcn) - prev_vcn);
-					unsigned long long n;
-					for (long long m = 0; m < clusters_left; m += static_cast<long long>(n))
+					last_action = _T("reading $MFT::$DATA");
+					long long llsize = 0;
+					RP const ret_ptrs = get_retrieval_pointers((p->root_path() + std::tvstring(_T("$MFT::$DATA"))).c_str(), &llsize, info.MftStartLcn.QuadPart, p->mft_record_size);
+					unsigned long long prev_vcn = 0;
+					for (RP::const_iterator i = ret_ptrs.begin(); i != ret_ptrs.end(); ++i)
 					{
-						n = std::min(i->first - prev_vcn, 1 + (static_cast<unsigned long long>(this->read_block_size) - 1) / this->cluster_size);
-						this->data_ret_ptrs.push_back(RetPtrs::value_type(prev_vcn, n, i->second + m));
-						prev_vcn += n;
+						long long const clusters_left = static_cast<long long>(std::max(i->first, prev_vcn) - prev_vcn);
+						unsigned long long n;
+						for (long long m = 0; m < clusters_left; m += static_cast<long long>(n))
+						{
+							n = std::min(i->first - prev_vcn, 1 + (static_cast<unsigned long long>(this->read_block_size) - 1) / this->cluster_size);
+							this->data_ret_ptrs.push_back(RetPtrs::value_type(prev_vcn, n, i->second + m));
+							prev_vcn += n;
+						}
 					}
 				}
 			}
-		}
-		{
-			for (int concurrency = 0; concurrency < 2; ++concurrency)
 			{
-				this->queue_next();
+				last_action = _T("enqueueing next read");
+				for (int concurrency = 0; concurrency < 2; ++concurrency)
+				{
+					this->queue_next();
+				}
 			}
 		}
+	}
+	catch (CStructured_Exception &ex)
+	{
+		std::tvstring title(p->root_path());
+		WTL::CString msg;
+		msg.Format(_T("Error 0x%#x while %s"), ex.GetSENumber(), last_action);
+		MessageBox(this->m_hWnd, msg, title.c_str(), MB_ICONERROR);
 	}
 	return result;
 }
@@ -4099,7 +4270,7 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	WTL::CStatusBarCtrl statusbar;
 	WTL::CAccelerator accel;
 	ShellInfoCache cache;
-	mutable TypeInfoCache type_cache /* based on file type ONLY; may be accessed concurrently */; mutable mutex type_cache_mutex; mutable std::tvstring type_cache_str;
+	mutable TypeInfoCache type_cache /* based on file type ONLY; may be accessed concurrently */; mutable atomic_namespace::recursive_mutex type_cache_mutex; mutable std::tvstring type_cache_str;
 	value_initialized<HANDLE> hRichEdit;
 	value_initialized<bool> autocomplete_called;
 	struct
@@ -4118,13 +4289,13 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 	WTL::CMenu menu;
 	intrusive_ptr<BackgroundWorker> iconLoader;
 	Handle closing_event;
-	intrusive_ptr<IoCompletionPort> iocp;
+	IoCompletionPort iocp;
 	value_initialized<bool> _initialized;
 	NFormat nformat_ui, nformat_io;
 	value_initialized<long long> time_zone_bias;
 	LCID lcid;
 	value_initialized<HANDLE> hWait, hEvent;
-	CoInit coinit;
+	OleInit oleinit;
 	COLORREF deletedColor;
 	COLORREF encryptedColor;
 	COLORREF compressedColor;
@@ -4153,20 +4324,19 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 public:
 	CMainDlg(HANDLE const hEvent, bool const rtl) :
 		CModifiedDialogImpl<CMainDlg>(true, rtl),
-		closing_event(CreateEvent(NULL, TRUE, FALSE, NULL)), iocp(new IoCompletionPort()),
+		closing_event(CreateEvent(NULL, TRUE, FALSE, NULL)),
 		nformat_ui(std::locale("")), nformat_io(std::locale()), lcid(GetThreadLocale()), hEvent(hEvent),
 		iconLoader(BackgroundWorker::create(true, global_exception_handler)),
 		deletedColor(RGB(0xFF, 0, 0)), encryptedColor(RGB(0, 0xFF, 0)), compressedColor(RGB(0, 0, 0xFF))
 	{
-		winnt::SYSTEM_TIMEOFDAY_INFORMATION info = {};
-		unsigned long nb;
-		winnt::NtQuerySystemInformation(static_cast<enum winnt::_SYSTEM_INFORMATION_CLASS>(3), &info, sizeof(info), &nb);
-		this->time_zone_bias = info.TimeZoneBias.QuadPart;
+		long long ft = 0; GetSystemTimeAsFileTime(&reinterpret_cast<FILETIME &>(ft));
+		long long ft_local; if (!FileTimeToLocalFileTime(&reinterpret_cast<FILETIME &>(ft), &reinterpret_cast<FILETIME &>(ft_local))) { ft_local = 0; }
+		this->time_zone_bias = ft_local - ft;
 	}
 
 	void SystemTimeToString(long long system_time /* UTC */, std::tvstring &buffer, bool const sortable, bool const include_time = true) const
 	{
-		long long local_time = system_time - this->time_zone_bias;
+		long long local_time = system_time + this->time_zone_bias;
 		winnt::TIME_FIELDS tf;
 		winnt::RtlTimeToTimeFields(&reinterpret_cast<LARGE_INTEGER &>(local_time), &tf);
 		if (sortable)
@@ -4226,8 +4396,7 @@ public:
 		UnregisterWait(this->hWait);
 		this->DeleteNotifyIcon();
 		this->iconLoader->clear();
-		this->iocp->close();
-		this->iocp.reset();
+		this->iocp.close();
 	}
 
 	struct IconLoaderCallback
@@ -4297,12 +4466,10 @@ public:
 #endif
 				Handle fileTemp;  // To prevent icon retrieval from changing the file time
 				{
-					std::tvstring ntpath = _T("\\??\\") + path;
-					winnt::UNICODE_STRING us = { static_cast<unsigned short>(ntpath.size() * sizeof(*ntpath.begin())), static_cast<unsigned short>(ntpath.size() * sizeof(*ntpath.begin())), ntpath.empty() ? NULL : &*ntpath.begin() };
-					winnt::OBJECT_ATTRIBUTES oa = { sizeof(oa), NULL, &us };
-					winnt::IO_STATUS_BLOCK iosb;
-					if (winnt::NtOpenFile(&fileTemp.value, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, &oa, &iosb, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0x00200000 /* FILE_OPEN_REPARSE_POINT */ | 0x00000008 /*FILE_NO_INTERMEDIATE_BUFFERING*/) == 0)
+					HANDLE const opened = CreateFile(path.c_str(), FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OVERLAPPED | FILE_FLAG_BACKUP_SEMANTICS, NULL);
+					if (opened != INVALID_HANDLE_VALUE)
 					{
+						Handle(opened).swap(fileTemp);
 						FILETIME preserve = { ULONG_MAX, ULONG_MAX };
 						SetFileTime(fileTemp, NULL, &preserve, NULL);
 					}
@@ -4608,13 +4775,15 @@ public:
 			result_type result = result_type();
 			result.first = (base->variation & 0x2) ? static_cast<typename result_type::second_type>(~v.depth()) : typename result_type::second_type();
 			NtfsIndex const *const p = base->this_->results.ith_index(v.index())->unvolatile();
+			typedef Index::key_type key_type;
+			key_type const key = v.key();
 			switch (SubItem)
 			{
 			case COLUMN_INDEX_SIZE:
 			case COLUMN_INDEX_SIZE_ON_DISK:
 			case COLUMN_INDEX_DESCENDENTS:
 			{
-				Index::size_info const &info = p->get_sizes(v.key());
+				Index::size_info const &info = p->get_sizes(key);
 				switch (SubItem)
 				{
 				case COLUMN_INDEX_SIZE: result.second = info.length; break;
@@ -4627,10 +4796,23 @@ public:
 			case COLUMN_INDEX_MODIFICATION_TIME:
 			case COLUMN_INDEX_ACCESS_TIME:
 			{
-				Index::standard_info const &info = p->get_stdinfo(v.key().frs());
+				Index::standard_info const &info = p->get_stdinfo(key.frs());
 				switch (SubItem)
 				{
-				case COLUMN_INDEX_CREATION_TIME: result.second = info.created; break;
+				case COLUMN_INDEX_CREATION_TIME:
+					if (base->variation & 0x1)
+					{
+						result.second = (
+							(static_cast<unsigned long long>(key.frs()) << (sizeof(unsigned int) * CHAR_BIT)) |
+							(static_cast<unsigned long long>(/* complemented because we grew our singly-linked list backwards */ ~key.name_info() & ((1U << key_type::name_info_bits) - 1)) << key_type::stream_info_bits) |
+							(static_cast<unsigned long long>(/* complemented because we grew our singly-linked list backwards */ ~key.stream_info() & ((1U << key_type::stream_info_bits) - 1)))
+							);
+					}
+					else
+					{
+						result.second = info.created;
+					}
+					break;
 				case COLUMN_INDEX_MODIFICATION_TIME: result.second = info.written; break;
 				case COLUMN_INDEX_ACCESS_TIME: result.second = info.accessed; break;
 				}
@@ -4907,7 +5089,7 @@ public:
 			this->cache.clear();
 			this->cached_column_header_widths.clear();
 			{
-				lock_guard<mutex> const lock(this->type_cache_mutex);
+				atomic_namespace::unique_lock<atomic_namespace::recursive_mutex> const lock(this->type_cache_mutex);
 				this->type_cache.clear();
 				this->type_cache_str.clear();
 			}
@@ -5211,15 +5393,51 @@ public:
 
 	void OnBrowse(UINT /*uNotifyCode*/, int /*nID*/, HWND /*hWnd*/)
 	{
-		TCHAR path[MAX_PATH];
-		BROWSEINFO info = { this->m_hWnd, NULL, path, this->LoadString(IDS_BROWSE_BODY), BIF_NONEWFOLDERBUTTON | BIF_USENEWUI | BIF_RETURNONLYFSDIRS | BIF_DONTGOBELOWDOMAIN };
-		if (LPITEMIDLIST const pidl = SHBrowseForFolder(&info))
+		struct Callback
 		{
-			bool const success = !!SHGetPathFromIDList(pidl, path);
-			ILFree(pidl);
-			if (success)
+			std::tstring initial_folder;
+			int operator()(ATL::CWindow window, UINT uMsg, LPARAM lParam)
 			{
-				this->txtPattern.SetWindowText((std::tstring(path) + getdirsep() + _T("*")).c_str());
+				int result = 0;
+				switch (uMsg)
+				{
+				case BFFM_INITIALIZED:
+					window.SendMessage(BFFM_SETSELECTION, TRUE, reinterpret_cast<LPARAM>(this->initial_folder.c_str()));
+					break;
+				case BFFM_VALIDATEFAILED:
+					result = 1;
+					break;
+				}
+				return result;
+			}
+			static int CALLBACK BrowseCallbackProc(HWND hwnd, UINT uMsg, LPARAM lParam, LPARAM lpData)
+			{
+				return (*reinterpret_cast<Callback *>(lpData))(hwnd, uMsg, lParam);
+			}
+		} callback;
+		ATL::CComBSTR bstr;
+		if (this->txtPattern.GetWindowText(bstr.m_str))
+		{
+			callback.initial_folder.assign(bstr, bstr.Length());
+			while (callback.initial_folder.size() > 0 && *(callback.initial_folder.end() - 1) == _T('*'))
+			{
+				callback.initial_folder.erase(callback.initial_folder.end() - 1, callback.initial_folder.end());
+			}
+		}
+		std::tstring path(MAX_PATH, _T('\0'));
+		CoInit const coinit;
+		BROWSEINFO info = { this->m_hWnd, NULL, &*path.begin(), this->LoadString(IDS_BROWSE_BODY), BIF_NONEWFOLDERBUTTON | BIF_USENEWUI | BIF_RETURNONLYFSDIRS | BIF_RETURNFSANCESTORS | BIF_DONTGOBELOWDOMAIN, Callback::BrowseCallbackProc, reinterpret_cast<LPARAM>(&callback) };
+		CShellItemIDList pidl(SHBrowseForFolder(&info));
+		if (!pidl.IsNull())
+		{
+			std::fill(path.begin(), path.end(), _T('\0'));
+			if (SHGetPathFromIDList(pidl, &*path.begin()))
+			{
+				path.erase(std::find(path.begin(), path.end(), _T('\0')), path.end());
+				adddirsep(path);
+				path += _T('*');
+				path += _T('*');
+				this->txtPattern.SetWindowText(path.c_str());
 				this->GotoDlgCtrl(this->txtPattern);
 				this->txtPattern.SetSel(this->txtPattern.GetWindowTextLength(), this->txtPattern.GetWindowTextLength());
 			}
@@ -5351,17 +5569,20 @@ public:
 
 	class LockedResults
 	{
+		LockedResults(LockedResults const &);
+		LockedResults &operator =(LockedResults const &);
+		typedef std::vector<atomic_namespace::unique_lock<atomic_namespace::recursive_mutex> > IndicesLocks;
 		CMainDlg *me;
-		std::vector<lock_guard<mutex> > indices_locks;  // this is to permit us to call unvolatile() below
+		IndicesLocks indices_locks;  // this is to permit us to call unvolatile() below
 	public:
 		explicit LockedResults(CMainDlg &me) : me(&me) { }
 		void operator()(size_t const index)
 		{
-			mutex *const m = &me->results.item_index(index)->get_mutex();
+			atomic_namespace::recursive_mutex *const m = &me->results.item_index(index)->get_mutex();
 			bool found_lock = false;
 			for (size_t j = 0; j != indices_locks.size(); ++j)
 			{
-				if (indices_locks[j].p == m)
+				if (indices_locks[j].mutex() == m)
 				{
 					found_lock = true;
 					break;
@@ -5369,8 +5590,9 @@ public:
 			}
 			if (!found_lock)
 			{
-				indices_locks.push_back(lock_guard<mutex>());
-				lock_guard<mutex>(m).swap(indices_locks.back());
+				indices_locks.push_back(IndicesLocks::value_type());
+				IndicesLocks::value_type temp(*m);
+				using std::swap; swap(temp, indices_locks.back());
 			}
 		}
 	};
@@ -5378,7 +5600,8 @@ public:
 	void RightClick(std::vector<size_t> const &indices, POINT const &point, int const focused)
 	{
 		LockedResults locked_results(*this);
-		std::for_each(indices.begin(), indices.end(), locked_results);
+		typedef std::vector<size_t> Indices;
+		std::for_each<Indices::const_iterator, LockedResults &>(indices.begin(), indices.end(), locked_results);
 		ATL::CComPtr<IShellFolder> desktop;
 		HRESULT volatile hr = S_OK;
 		UINT const minID = 1000;
@@ -5517,7 +5740,7 @@ public:
 		}
 		else if (id == dumpId || id == copyId || id == copyPathId || id == copyTableId)
 		{
-			this->dump_or_save(indices, id == dumpId ? 0 : id == copyId ? 2 : 1, id == copyPathId ? COLUMN_INDEX_PATH : -1);
+			this->dump_or_save(indices, id == dumpId ? 0 : id == copyId ? 2 : 1, id == copyTableId ? -1 : COLUMN_INDEX_PATH);
 		}
 		else if (id >= minID)
 		{
@@ -5563,7 +5786,11 @@ public:
 			File const output = { mode <= 0 ? _topen(fdlg.m_ofn.lpstrFile, _O_BINARY | _O_TRUNC | _O_CREAT | _O_RDWR | _O_SEQUENTIAL, _S_IREAD | _S_IWRITE) : NULL };
 			if (mode > 0 || output != NULL)
 			{
-				bool const shell_file_list = mode == 2 && single_column == COLUMN_INDEX_PATH;
+				bool const shell_file_list = mode == 2;
+				if (shell_file_list)
+				{
+					assert(single_column == COLUMN_INDEX_PATH && "code below assumes path column is the only one specified");
+				}
 				struct Clipboard
 				{
 					bool success;
@@ -5807,11 +6034,13 @@ public:
 			if (p->wVKey == 'C')
 			{
 				WTL::CWaitCursor wait;
+				typedef std::vector<size_t> Indices;
 				std::vector<size_t> indices;
 				this->append_selected_indices(indices);
 				LockedResults locked_results(*this);
-				std::for_each(indices.begin(), indices.end(), locked_results);
-				this->dump_or_save(indices, GetKeyState(VK_SHIFT) < 0 ? 1 : 2, COLUMN_INDEX_PATH);
+				std::for_each<Indices::const_iterator, LockedResults &>(indices.begin(), indices.end(), locked_results);
+				bool const copy_path = GetKeyState(VK_SHIFT) < 0;
+				this->dump_or_save(indices, copy_path ? 1 : 2, COLUMN_INDEX_PATH);
 			}
 		}
 		if (p->wVKey == VK_UP && this->lvFiles.GetNextItem(-1, LVNI_FOCUSED) == 0)
@@ -5825,7 +6054,7 @@ public:
 	{
 		size_t result = 0;
 		while (name.size() > name_offset && hasdirsep(name)) { name.erase(name.end() - 1); }
-		lock_guard<mutex> const lock(this->type_cache_mutex);
+		atomic_namespace::unique_lock<atomic_namespace::recursive_mutex> const lock(this->type_cache_mutex);
 		this->type_cache_str.assign(name.begin() + static_cast<ptrdiff_t>(name_offset), basename(name.begin() + static_cast<ptrdiff_t>(name_offset), name.end()));
 		size_t ext_offset, ext_length;
 		if (file_attributes & FILE_ATTRIBUTE_DIRECTORY)
@@ -6415,7 +6644,7 @@ public:
 					q.reset(new NtfsIndex(path_name), true);
 					typedef OverlappedNtfsMftReadPayload T;
 					intrusive_ptr<T> p(new T(this->iocp, q, this->m_hWnd, this->closing_event));
-					this->iocp->post(0, static_cast<uintptr_t>(ii), p);
+					this->iocp.post(0, static_cast<uintptr_t>(ii), p);
 					if (this->cmbDrive.SetItemDataPtr(ii, q.get()) != CB_ERR)
 					{
 						q.detach();
@@ -6678,10 +6907,6 @@ int _tmain(int argc, TCHAR* argv[])
 }
 
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
-
-#if defined(_MSC_VER) && _MSC_VER >= 1900 && !defined(_CPPLIB_VER)
-extern "C" __declspec(noreturn) void __cdecl __std_terminate() { terminate(); }
-#endif
 
 int __stdcall _tWinMain(HINSTANCE const hInstance, HINSTANCE /*hPrevInstance*/, LPTSTR /*lpCmdLine*/, int nShowCmd)
 {
