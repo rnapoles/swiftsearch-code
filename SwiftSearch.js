@@ -113,7 +113,15 @@ function CreateCommandLine(argv) {
 function system(cmdline) {
 	var result;
 	var old_path = WshProcEnv("PATH");
-	WshProcEnv("PATH") = [old_path, WshShell.ExpandEnvironmentStrings("%ProgramFiles%\\Resource Hacker"), WshShell.ExpandEnvironmentStrings("%ProgramFiles(x86)%\\Resource Hacker")].join(";")
+	WshProcEnv("PATH") = [
+		old_path,
+		WshShell.ExpandEnvironmentStrings("%ProgramFiles%\\Resource Hacker"),
+		WshShell.ExpandEnvironmentStrings("%ProgramFiles(x86)%\\Resource Hacker"),
+		WshShell.ExpandEnvironmentStrings("%ProgramFiles(x86)%\\Microsoft SDKs\\Windows\\v7.1A\\bin\\x64"),
+		WshShell.ExpandEnvironmentStrings("%ProgramFiles(x86)%\\Microsoft SDKs\\Windows\\v7.1A\\bin"),
+		WshShell.ExpandEnvironmentStrings("%ProgramFiles%\\Microsoft SDKs\Windows\v6.0A\Bin\\x64"),
+		WshShell.ExpandEnvironmentStrings("%ProgramFiles%\\Microsoft SDKs\Windows\v6.0A\Bin")
+	].join(";")
 	try {
 		var cmd = "\"" + WshShell.ExpandEnvironmentStrings("%ComSpec%") + "\"" + " /Q /S /C \"" + CreateCommandLine(cmdline) + "\"";
 		result = WshShell.Run(cmd, 0, true);

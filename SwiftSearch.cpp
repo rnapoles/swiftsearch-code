@@ -65,22 +65,27 @@ extern WTL::CAppModule _Module;
 #include "resource.h"
 
 template<class T, class Traits = std::char_traits<T>, class Ax = std::allocator<T> >
-class basic_vector_based_string : public std::vector<T, Ax>
+class basic_vector_based_string : public
+#ifdef _DEBUG
+	std::basic_string<T, Traits, Ax>
+#else
+	std::vector<T, Ax>
+#endif
 {
 	typedef basic_vector_based_string this_type;
-	typedef std::vector<T, Ax> base_type;
 	typedef std::basic_string<T, Traits, Ax> string_type;
+	typedef
+#ifdef _DEBUG
+		string_type
+#else
+		std::vector<T, Ax>
+#endif
+		base_type;
 public:
-	typedef Traits traits_type;
 	typedef typename base_type::size_type size_type;
-	typedef typename base_type::difference_type difference_type;
 	typedef typename base_type::allocator_type allocator_type;
 	typedef typename base_type::value_type const *const_pointer;
 	typedef typename base_type::value_type value_type;
-	typedef typename base_type::iterator iterator;
-	typedef typename base_type::const_iterator const_iterator;
-	using base_type::erase;
-	using base_type::insert;
 	static size_type const npos = ~size_type();
 	this_type() : base_type() { }
 	explicit this_type(const_pointer const value, size_t const n = npos) : base_type(value, value + static_cast<ptrdiff_t>(n == npos ? Traits::length(value) : n)) { }
@@ -89,6 +94,14 @@ public:
 	explicit this_type(allocator_type const &ax) : base_type(ax) { }
 	explicit this_type(size_type const n, allocator_type const &ax) : base_type(n, ax) { }
 	explicit this_type(size_type const n, value_type const &value, allocator_type const &ax) : base_type(n, value, ax) { }
+	using base_type::insert;
+	using base_type::operator =;
+#ifndef _DEBUG
+	typedef Traits traits_type;
+	typedef typename base_type::difference_type difference_type;
+	typedef typename base_type::iterator iterator;
+	typedef typename base_type::const_iterator const_iterator;
+	using base_type::erase;
 	void append(size_t const n, value_type const &value)
 	{
 		if (!n) { return; }
@@ -132,15 +145,11 @@ public:
 #endif
 	}
 	void append(const_pointer const value, size_type n = npos) { return this->append(value, value + static_cast<ptrdiff_t>(n == npos ? Traits::length(value) : n)); }
-	this_type &operator =(const_pointer const value) { this->clear(); this->append(value); return *this; }
-	this_type &operator+=(base_type const &value) { if (!value.empty()) { this->append(&*value.begin(), &*(value.end() - 1) + 1); } return *this; }
 	size_type find(value_type const &value, size_t const offset = 0) const { const_iterator begin = this->begin() + static_cast<difference_type>(offset), end = this->end(); size_type result = static_cast<size_type>(std::find(begin, end, value) - begin); if (result >= static_cast<size_type>(end - begin)) { result = npos; } return result; }
 	const_pointer c_str() { const_pointer p; size_t const n = this->size(); if (n == 0 || this->capacity() <= n || *(&*this->begin() + static_cast<ptrdiff_t>(n)) != value_type()) { this->push_back(value_type()); p = &*this->begin(); this->pop_back(); } else { p = &*this->begin(); } return p; }
 	const_pointer data() const { return this->empty() ? NULL :&*this->begin(); }
 	iterator erase(size_t const pos, size_type const n = npos)
 	{ return this->erase(this->begin() + static_cast<difference_type>(pos), this->begin() + static_cast<difference_type>(pos) + (n == npos ? this->size() - pos : n)); }
-	iterator insert(iterator const i, const_pointer const value, size_type const n = npos)
-	{ size_type const pos = static_cast<size_type>(i - this->begin()); this->insert(i, value, value + static_cast<ptrdiff_t>(n == npos ? Traits::length(value) : n)); return this->begin() + static_cast<difference_type>(pos); }
 	iterator insert(size_t const pos, const_pointer const value, size_type const n = npos)
 	{ return this->insert(this->begin() + static_cast<difference_type>(pos), value, n); }
 	this_type operator +(base_type const &other) const { this_type result; result.reserve(this->size() + other.size()); result += *this; result += other; return result; }
@@ -159,8 +168,16 @@ public:
 	}
 #endif
 	friend this_type operator +(const_pointer const left, base_type const &right) { size_t const nleft = Traits::length(left); this_type result; result.reserve(nleft + right.size()); result.append(left, nleft); result += right; return result; }
+	this_type &operator+=(base_type const &value) { if (!value.empty()) { this->append(&*value.begin(), &*(value.end() - 1) + 1); } return *this; }
+#else
+	using base_type::operator+=;
+	this_type &operator+=(this_type const &value) { if (!value.empty()) { this->append(&*value.begin(), &*(value.end() - 1) + 1); } return *this; }
+#endif
 	template<class Ax2>
 	friend std::basic_string<T, Traits, Ax2> &operator+=(std::basic_string<T, Traits, Ax2> &out, this_type const &me) { out.append(me.begin(), me.end()); return out; }
+	iterator insert(iterator const i, const_pointer const value, size_type const n = npos)
+	{ size_type const pos = static_cast<size_type>(i - this->begin()); this->insert(i, value, value + static_cast<ptrdiff_t>(n == npos ? Traits::length(value) : n)); return this->begin() + static_cast<difference_type>(pos); }
+	this_type &operator =(const_pointer const value) { this->clear(); this->append(value); return *this; }
 };
 
 template<class It, class Less>
@@ -695,6 +712,66 @@ LPTSTR GetAnyErrorText(DWORD errorCode, va_list* pArgList = NULL)
 	}
 	return buffer;
 }
+
+struct Wow64
+{
+	static HMODULE GetKernel32()
+	{
+		HMODULE kernel32 = NULL;
+		return GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCTSTR>(&GetSystemInfo), &kernel32) ? kernel32 : NULL;
+	}
+	typedef BOOL WINAPI IsWow64Process_t(IN HANDLE hProcess, OUT PBOOL Wow64Process); static IsWow64Process_t *IsWow64Process;
+	static bool is_wow64()
+	{
+		bool result = false;
+#ifdef _M_IX86
+		BOOL isWOW64 = FALSE;
+		if (!IsWow64Process)
+		{ IsWow64Process = reinterpret_cast<IsWow64Process_t *>(GetProcAddress(GetKernel32(), _CRT_STRINGIZE(IsWow64Process))); }
+		result = IsWow64Process && IsWow64Process(GetCurrentProcess(), &isWOW64) && isWOW64;
+#endif
+		return result;
+	}
+	typedef BOOL WINAPI Wow64DisableWow64FsRedirection_t(PVOID *OldValue); static Wow64DisableWow64FsRedirection_t *Wow64DisableWow64FsRedirection;
+	static void *disable()
+	{
+		void *old = NULL;
+#ifdef _M_IX86
+		if (!Wow64DisableWow64FsRedirection)
+		{ Wow64DisableWow64FsRedirection = reinterpret_cast<Wow64DisableWow64FsRedirection_t *>(GetProcAddress(GetKernel32(), _CRT_STRINGIZE(Wow64DisableWow64FsRedirection))); }
+		if (Wow64DisableWow64FsRedirection && !Wow64DisableWow64FsRedirection(&old))
+		{ old = NULL; }
+#endif
+		return old;
+	}
+	typedef BOOL WINAPI Wow64RevertWow64FsRedirection_t(PVOID OlValue); static Wow64RevertWow64FsRedirection_t *Wow64RevertWow64FsRedirection;
+	static bool revert(PVOID old)
+	{
+		bool result = false;
+#ifdef _M_IX86
+		if (!Wow64RevertWow64FsRedirection)
+		{ Wow64RevertWow64FsRedirection = reinterpret_cast<Wow64RevertWow64FsRedirection_t *>(GetProcAddress(GetKernel32(), _CRT_STRINGIZE(Wow64RevertWow64FsRedirection))); }
+		result = Wow64RevertWow64FsRedirection && Wow64RevertWow64FsRedirection(old);
+#endif
+		return result;
+	}
+	Wow64() { }
+};
+#ifdef _M_IX86
+Wow64 const init_wow64;
+Wow64::IsWow64Process_t *Wow64::IsWow64Process = NULL;
+Wow64::Wow64DisableWow64FsRedirection_t *Wow64::Wow64DisableWow64FsRedirection = NULL;
+Wow64::Wow64RevertWow64FsRedirection_t *Wow64::Wow64RevertWow64FsRedirection = NULL;
+#endif
+
+struct Wow64Disable
+{
+	bool disable;
+	void *cookie;
+	Wow64Disable(bool disable) : disable(disable) { if (this->disable) { this->cookie = Wow64::disable(); } }
+	~Wow64Disable() { if (this->disable) { Wow64::revert(this->cookie); } }
+};
+
 
 namespace winnt
 {
@@ -1678,6 +1755,7 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 		file_size_type(unsigned long long const value) : low(static_cast<unsigned int>(value)), high(static_cast<unsigned short>(value >> (sizeof(unsigned int) * CHAR_BIT))) { }
 		operator unsigned long long() const { return (static_cast<unsigned long long>(this->high) << (sizeof(unsigned int) * CHAR_BIT)) | this->low; }
 		this_type &operator+=(unsigned long long const &other) { return *this = *this + other; }
+		this_type &operator-=(unsigned long long const &other) { return *this = *this - other; }
 	};
 	struct StandardInfo
 	{
@@ -1741,7 +1819,9 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 		StreamInfo() : SizeInfo(), next_entry(), name(), type_name_id() { }
 		typedef small_t<size_t>::type next_entry_type; next_entry_type next_entry;
 		NameInfo name;
-		unsigned char type_name_id /* zero if and only if $I30:$INDEX_ROOT or $I30:$INDEX_ALLOCATION */;
+		unsigned char is_sparse : 1;
+		unsigned char is_allocated_size_accounted_for_in_main_stream : 1;
+		unsigned char type_name_id : CHAR_BIT - 2 /* zero if and only if $I30:$INDEX_ROOT or $I30:$INDEX_ALLOCATION */;
 	};
 	friend struct std::is_scalar<StreamInfo>;
 	typedef std::codecvt<std::tstring::value_type, char, int /*std::mbstate_t*/> CodeCvt;
@@ -1871,10 +1951,12 @@ public:
 	typedef StandardInfo standard_info;
 	typedef NameInfo name_info;
 	typedef SizeInfo size_info;
+	atomic_namespace::atomic<long long> reserved_clusters;
+	value_initialized<long long> mft_zone_start, mft_zone_end;
 	value_initialized<unsigned int> cluster_size;
 	value_initialized<unsigned int> mft_record_size;
 	value_initialized<unsigned int> mft_capacity;
-	NtfsIndex(std::tvstring value) : _root_path(value), _finished_event(CreateEvent(NULL, TRUE, FALSE, NULL)), _total_names_and_streams(0), _records_so_far(0), _preprocessed_so_far(0), _perf_reports_circ(1 << 6), _cancelled(false), _perf_avg_speed(Speed())
+	NtfsIndex(std::tvstring value) : _root_path(value), _finished_event(CreateEvent(NULL, TRUE, FALSE, NULL)), _total_names_and_streams(0), _records_so_far(0), _preprocessed_so_far(0), _perf_reports_circ(1 << 6), _cancelled(false), _perf_avg_speed(Speed()), reserved_clusters(0)
 	{
 	}
 	~NtfsIndex()
@@ -2076,120 +2158,113 @@ public:
 					case ntfs::AttributeReparsePoint:
 					case ntfs::AttributeEA:
 					case ntfs::AttributeEAInformation:
+					default:
 					{
-						unsigned long long nonresident_size;
-						bool const sparse = false /* BUG: child attributes can have the 'sparse' flag set when base attributes don't, so we get an inconsistency */ && !!(ah->Flags & 0x8000);
 						if (ah->IsNonResident)
 						{
-							if (sparse)
+							typedef long long T;
+							T next_vcn = ah->NonResident.LowestVCN, current_vcn = next_vcn, current_lcn = T();
+							unsigned char const *const mapping_pairs = reinterpret_cast<unsigned char const *>(ah) + static_cast<ptrdiff_t>(ah->NonResident.MappingPairsOffset);
+							void const *const ah_end = reinterpret_cast<unsigned char const *>(ah) + ah->Length;
+							for (size_t j = 0; mapping_pairs[j] && &mapping_pairs[j] < ah_end && &mapping_pairs[j] < frsh_end /* also check we don't go outside of buffer... */; )
 							{
-								nonresident_size = 0;
-								typedef long long T;
-								T next_vcn = ah->NonResident.LowestVCN, current_vcn = next_vcn, current_lcn = T();
-								unsigned char const *const mapping_pairs = reinterpret_cast<unsigned char const *>(ah) + static_cast<ptrdiff_t>(ah->NonResident.MappingPairsOffset);
-								void const *const ah_end = reinterpret_cast<unsigned char const *>(ah) + ah->Length;
-								for (size_t j = 0; mapping_pairs[j] && &mapping_pairs[j] < ah_end && &mapping_pairs[j] < frsh_end /* also check we don't go outside of buffer... */; )
+								unsigned char const lv = mapping_pairs[j++];
 								{
-									unsigned char const lv = mapping_pairs[j++];
-									{
-										unsigned char v = static_cast<unsigned char>(lv & ((1U << (CHAR_BIT / 2)) - 1));
-										T delta = v && (mapping_pairs[j + v - 1] >> (CHAR_BIT - 1)) ? ~T() << (v * CHAR_BIT) : T();
-										for (unsigned char k = 0; k != v; ++k) { delta |= static_cast<T>(mapping_pairs[j++]) << (CHAR_BIT * k); }
-										next_vcn += delta;
-									}
-									{
-										unsigned char l = static_cast<unsigned char>(lv >> (CHAR_BIT / 2));
-										T delta = l && (mapping_pairs[j + l - 1] >> (CHAR_BIT - 1)) ? ~T() << (l * CHAR_BIT) : T();
-										for (unsigned char k = 0; k != l; ++k) { delta |= static_cast<T>(mapping_pairs[j++]) << (CHAR_BIT * k); }
-										current_lcn += delta;
-									}
-									if (current_lcn)
-									{
-										nonresident_size += next_vcn - current_vcn;
-									}
-									current_vcn = next_vcn;
+									unsigned char v = static_cast<unsigned char>(lv & ((1U << (CHAR_BIT / 2)) - 1));
+									T delta = v && (mapping_pairs[j + v - 1] >> (CHAR_BIT - 1)) ? ~T() << (v * CHAR_BIT) : T();
+									for (unsigned char k = 0; k != v; ++k) { delta |= static_cast<T>(mapping_pairs[j++]) << (CHAR_BIT * k); }
+									next_vcn += delta;
 								}
-								nonresident_size *= this->cluster_size;
-							}
-							else { nonresident_size = (ah->Flags & 0x0001) ? ah->NonResident.CompressedSize : (frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize : ah->NonResident.AllocatedSize); }
-						}
-						else { nonresident_size = 0; }
-						bool const is_primary_attribute = !(ah->IsNonResident && ah->NonResident.LowestVCN);
-						if (is_primary_attribute || sparse)
-						{
-							bool const isI30 = ah->NameLength == 4 && memcmp(ah->name(), _T("$I30"), sizeof(*ah->name()) * 4) == 0;
-							if (ah->Type == (isI30 ? ntfs::AttributeIndexAllocation : ntfs::AttributeIndexRoot))
-							{
-								// Skip this -- for $I30, index header will take care of index allocation; for others, no point showing index root anyway
-							}
-							else if (!(isI30 && ah->Type == ntfs::AttributeBitmap))
-							{
-								bool const isdir = (ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && isI30;
-								unsigned char const name_length = isdir ? static_cast<unsigned char>(0) : ah->NameLength;
-								unsigned char const type_name_id = static_cast<unsigned char>(isdir ? 0 : ah->Type >> (CHAR_BIT / 2));
-								StreamInfo *info = NULL;
-								if (StreamInfos::value_type *const si = this->streaminfo(&*base_record))
 								{
-									if (sparse)
+									unsigned char l = static_cast<unsigned char>(lv >> (CHAR_BIT / 2));
+									T delta = l && (mapping_pairs[j + l - 1] >> (CHAR_BIT - 1)) ? ~T() << (l * CHAR_BIT) : T();
+									for (unsigned char k = 0; k != l; ++k) { delta |= static_cast<T>(mapping_pairs[j++]) << (CHAR_BIT * k); }
+									current_lcn += delta;
+								}
+								if (current_lcn)
+								{
+									T
+										intersect_mft_zone_begin = this->mft_zone_start,
+										intersect_mft_zone_end = this->mft_zone_end;
+									if (intersect_mft_zone_begin < current_vcn) { intersect_mft_zone_begin = current_vcn; }
+									if (intersect_mft_zone_end >= next_vcn) { intersect_mft_zone_end = next_vcn; }
+									if (intersect_mft_zone_begin < intersect_mft_zone_end)
 									{
-										for (StreamInfos::value_type *k = si; k; k = this->streaminfo(k->next_entry))
-										{
-											if (k->type_name_id == type_name_id && k->name.length == name_length &&
-												(name_length == 0 || std::equal(ah->name(), ah->name() + static_cast<ptrdiff_t>(ah->NameLength), this->names.begin() + static_cast<ptrdiff_t>(k->name.offset()))))
-											{
-												info = k;
-												break;
-											}
-										}
+										this->reserved_clusters.fetch_sub(next_vcn - current_vcn);
 									}
-									if (!info)
+								}
+								current_vcn = next_vcn;
+							}
+						}
+						bool const is_primary_attribute = !(ah->IsNonResident && ah->NonResident.LowestVCN);
+						if (is_primary_attribute)
+						{
+							bool const isdir = (ah->Type == ntfs::AttributeBitmap || ah->Type == ntfs::AttributeIndexRoot || ah->Type == ntfs::AttributeIndexAllocation) && ah->NameLength == 4 && memcmp(ah->name(), _T("$I30"), sizeof(*ah->name()) * 4) == 0;
+							unsigned char const name_length = isdir ? static_cast<unsigned char>(0) : ah->NameLength;
+							unsigned char const type_name_id = static_cast<unsigned char>(isdir ? 0 : ah->Type >> (CHAR_BIT / 2));
+							StreamInfo *info = NULL;
+							if (StreamInfos::value_type *const si = this->streaminfo(&*base_record))
+							{
+								if (isdir)  // Do we want to merge this with another attribute? (e.g. AttributeIndexAllocation with AttributeIndexRoot, or secondary entry with primary entry)
+								{
+									for (StreamInfos::value_type *k = si; k; k = this->streaminfo(k->next_entry))
 									{
-										size_t const stream_index = this->streaminfos.size();
-										this->streaminfos.push_back(*si);
-										si->next_entry = static_cast<small_t<size_t>::type>(stream_index);
+										if (k->type_name_id == type_name_id && k->name.length == name_length &&
+											(name_length == 0 || std::equal(ah->name(), ah->name() + static_cast<ptrdiff_t>(ah->NameLength), this->names.begin() + static_cast<ptrdiff_t>(k->name.offset()))))
+										{
+											info = k;
+											break;
+										}
 									}
 								}
 								if (!info)
 								{
-									info = &base_record->first_stream;
-									info->allocated = 0;  // We have to initialize this because we add to it later
-
-									// We also have to initialize the name because it _identifies_ the attribute
-									info->type_name_id = type_name_id;
-									info->name.length = name_length;
-									if (isdir)
-									{
-										// Suppress name
-										info->name.offset(0);
-									}
-									else
-									{
-										info->name.offset(static_cast<unsigned int>(this->names.size()));
-										bool const ascii = is_ascii(ah->name(), ah->NameLength);
-										info->name.ascii(ascii);
-										append_directional(this->names, ah->name(), ah->NameLength, ascii ? 1 : 0);
-									}
-									++base_record->stream_count;
-									this->_total_names_and_streams.fetch_add(base_record->name_count, atomic_namespace::memory_order_acq_rel);
-								}
-								info->allocated += nonresident_size;
-								if (is_primary_attribute)
-								{
-									if (!sparse)
-									{
-										info->allocated = ah->IsNonResident
-											? ah->NonResident.CompressionUnit
-											? static_cast<file_size_type>(ah->NonResident.CompressedSize)
-											: static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */
-												? ah->NonResident.InitializedSize /* actually this is still wrong... should be looking at VCNs */
-												: ah->NonResident.AllocatedSize)
-											: 0;
-									}
-									info->length = ah->IsNonResident ? static_cast<file_size_type>(frs_base == 0x000000000008 /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... */ : ah->NonResident.DataSize) : ah->Resident.ValueLength;
-									info->bulkiness = info->allocated;
-									info->treesize = isdir;
+									size_t const stream_index = this->streaminfos.size();
+									this->streaminfos.push_back(*si);
+									si->next_entry = static_cast<small_t<size_t>::type>(stream_index);
 								}
 							}
+							if (!info)
+							{
+								info = &base_record->first_stream;
+								info->allocated = 0;  // We have to initialize this because we add to it later
+								info->length = 0;  // We have to initialize this because we add to it later
+								info->bulkiness = 0;  // We have to initialize this because we add to it later
+								info->treesize = 0;  // We have to initialize this because we add to it later
+								// We also have to initialize the name because it _identifies_ the attribute
+								info->is_sparse = 0;
+								info->is_allocated_size_accounted_for_in_main_stream = 0;
+								info->type_name_id = type_name_id;
+								info->name.length = name_length;
+								if (isdir)
+								{
+									// Suppress name
+									info->name.offset(0);
+								}
+								else
+								{
+									info->name.offset(static_cast<unsigned int>(this->names.size()));
+									bool const ascii = is_ascii(ah->name(), ah->NameLength);
+									info->name.ascii(ascii);
+									append_directional(this->names, ah->name(), ah->NameLength, ascii ? 1 : 0);
+								}
+								++base_record->stream_count;
+								this->_total_names_and_streams.fetch_add(base_record->name_count, atomic_namespace::memory_order_acq_rel);
+							}
+							bool const is_badclus_bad = frs_base == 0x000000000008 && ah->NameLength == 4 && memcmp(ah->name(), _T("$Bad"), sizeof(*ah->name()) * 4) == 0;
+							bool const is_sparse = !!(ah->Flags & 0x8000);
+							if (is_sparse)
+							{ info->is_sparse |= 0x1; }
+							info->allocated += ah->IsNonResident
+								? ah->NonResident.CompressionUnit
+								? static_cast<file_size_type>(ah->NonResident.CompressedSize)
+								: static_cast<file_size_type>(is_badclus_bad /* $BadClus */
+									? ah->NonResident.InitializedSize /* actually this is still wrong... should be looking at VCNs */
+									: ah->NonResident.AllocatedSize)
+								: 0;
+							info->length += ah->IsNonResident ? static_cast<file_size_type>(is_badclus_bad /* $BadClus */ ? ah->NonResident.InitializedSize /* actually this is still wrong... */ : ah->NonResident.DataSize) : ah->Resident.ValueLength;
+							info->bulkiness += info->allocated;
+							info->treesize = isdir;
 						}
 						break;
 					}
@@ -2231,6 +2306,7 @@ public:
 				NtfsIndex *me;
 				typedef std::vector<unsigned long long> Scratch;
 				Scratch scratch;
+				size_t depth;
 				PreprocessResult operator()(Records::value_type *const fr, key_type::name_info_type const name_info, unsigned short const total_names)
 				{
 					size_t const old_scratch_size = scratch.size();
@@ -2238,6 +2314,7 @@ public:
 					if (fr)
 					{
 						PreprocessResult children_size;
+						++depth;
 						for (ChildInfos::value_type *i = me->childinfo(fr); i && ~i->record_number; i = me->childinfo(i->next_entry))
 						{
 							Records::value_type *const fr2 = me->find(i->record_number);
@@ -2252,6 +2329,7 @@ public:
 								children_size.treesize += subresult.treesize;
 							}
 						}
+						--depth;
 						std::make_heap(scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size), scratch.end());
 						unsigned long long const threshold = children_size.allocated / 100;
 						// Algorithm: All files whose sizes are < X% of the current folder's size are assumed to contribute to the folder's bulkiness.
@@ -2262,23 +2340,56 @@ public:
 							if (*i < threshold) { break; }
 							children_size.bulkiness = children_size.bulkiness - *i;
 						}
+						if (depth == 0)
+						{
+							children_size.allocated += static_cast<unsigned long long>(me->reserved_clusters) * me->cluster_size;
+						}
 						result = children_size;
+						struct Accumulator
+						{
+							static unsigned long long delta_impl(unsigned long long const value, unsigned short const i, unsigned short const n)
+							{
+								return value * (i + 1) / n - value * i / n;
+							}
+							static unsigned long long delta(unsigned long long const value, unsigned short const i, unsigned short const n)
+							{
+								return n != 1 ? n != 2 ? delta_impl(value, i, n) : i != 1 ? delta_impl(value, ((void)(assert(i == 0)), 0), n) : delta_impl(value, i, n) : delta_impl(value, ((void)(assert(i == 0)), 0), n);
+							}
+						};
+						StreamInfos::value_type *default_stream = NULL, *compressed_default_stream_to_merge = NULL;
+						unsigned long long default_allocated_delta = 0, compressed_default_allocated_delta = 0;
 						for (StreamInfos::value_type *k = me->streaminfo(fr); k; k = me->streaminfo(k->next_entry))
 						{
-							struct Accumulator
+							bool const is_data_attribute = (k->type_name_id << (CHAR_BIT / 2)) == ntfs::AttributeData;
+							bool const is_default_stream = is_data_attribute && !k->name.length;
+							unsigned long long const
+								allocated_delta = Accumulator::delta(k->is_allocated_size_accounted_for_in_main_stream ? 0 : k->allocated, name_info, total_names),
+								bulkiness_delta = Accumulator::delta(k->bulkiness, name_info, total_names);
+							if (is_default_stream)
 							{
-								static unsigned long long delta_impl(unsigned long long const value, unsigned short const i, unsigned short const n)
+								default_stream = k;
+								default_allocated_delta += allocated_delta;
+							}
+							bool const is_compression_reparse_point = is_data_attribute
+								&& k->name.length
+								&& (
+									k->name.ascii()
+									? memcmp(reinterpret_cast< char   const *>(&me->names[k->name.offset()]),  "WofCompressedData", 17 * sizeof( char  )) == 0
+									: memcmp(reinterpret_cast<wchar_t const *>(&me->names[k->name.offset()]), L"WofCompressedData", 17 * sizeof(wchar_t)) == 0
+									);
+							unsigned long long const
+								length_delta = Accumulator::delta(is_compression_reparse_point ? 0 : k->length, name_info, total_names);
+							if (is_compression_reparse_point)
+							{
+								if (!k->is_allocated_size_accounted_for_in_main_stream)
 								{
-									return value * (i + 1) / n - value * i / n;
+									compressed_default_stream_to_merge = k;
+									compressed_default_allocated_delta += allocated_delta;
 								}
-								static unsigned long long delta(unsigned long long const value, unsigned short const i, unsigned short const n)
-								{
-									return n != 1 ? n != 2 ? delta_impl(value, i, n) : i != 1 ? delta_impl(value, ((void)(assert(i == 0)), 0), n) : delta_impl(value, i, n) : delta_impl(value, ((void)(assert(i == 0)), 0), n);
-								}
-							};
-							result.length += Accumulator::delta(k->length, name_info, total_names);
-							result.allocated += Accumulator::delta(k->allocated, name_info, total_names);
-							result.bulkiness += Accumulator::delta(k->bulkiness, name_info, total_names);
+							}
+							result.length += length_delta;
+							result.allocated += allocated_delta;
+							result.bulkiness += bulkiness_delta;
 							result.treesize += 1;
 							if (!k->type_name_id)
 							{
@@ -2288,6 +2399,14 @@ public:
 								k->treesize += children_size.treesize;
 							}
 							me->_preprocessed_so_far.fetch_add(1, atomic_namespace::memory_order_acq_rel);
+						}
+						if (compressed_default_stream_to_merge && default_stream)
+						{
+							compressed_default_stream_to_merge->is_allocated_size_accounted_for_in_main_stream = 1;
+							default_stream->allocated += compressed_default_stream_to_merge->allocated;
+							result.allocated -= default_allocated_delta;
+							result.allocated -= compressed_default_allocated_delta;
+							result.allocated += Accumulator::delta(default_stream->allocated, name_info, total_names);
 						}
 					}
 					scratch.erase(scratch.begin() + static_cast<ptrdiff_t>(old_scratch_size), scratch.end());
@@ -2584,6 +2703,7 @@ private:
 			if (frs < me->records_lookup.size() && (frs == 0x00000005 || frs >= 0x00000010 || this->match_attributes))
 			{
 				Records::value_type const *const fr = me->find(frs);
+				if (frs != 0x00000005 || depth == 0)
 				{
 					size_t const old_size = path->size();
 					NameInfo const old_name = name;
@@ -2597,24 +2717,39 @@ private:
 					unsigned short ii = 0;
 					for (ChildInfos::value_type const *i = me->childinfo(fr); i && ~i->record_number; i = me->childinfo(i->next_entry), ++ii)
 					{
-						Records::value_type const *const fr2 = me->find(i->record_number);
-						unsigned short const ji_target = fr2->name_count - static_cast<size_t>(1) - i->name_index;
-						unsigned short ji = 0;
-						for (LinkInfos::value_type const *j = me->nameinfo(fr2); j; j = me->nameinfo(j->next_entry), ++ji)
+						unsigned short name_index = i->name_index;
+						unsigned int record_number = i->record_number;
+					START:
+#pragma warning(push)
+#pragma warning(disable: 4456)
+						if (bool i = true /* this is to HIDE the outer 'i', to prevent accessing it directly (because we put in a dummy entry sometimes) */)
+#pragma warning(pop)
 						{
-							if (j->parent == frs && ji == ji_target)
+							Records::value_type const *const fr2 = me->find(record_number);
+							unsigned short const ji_target = fr2->name_count - static_cast<size_t>(1) - name_index;
+							unsigned short ji = 0;
+							for (LinkInfos::value_type const *j = me->nameinfo(fr2); j; j = me->nameinfo(j->next_entry), ++ji)
 							{
-								if (buffered_matching)
+								if (j->parent == frs && ji == ji_target)
 								{
-									append_directional(*path, &me->names[j->name.offset()], j->name.length, j->name.ascii() ? -1 : 0);
-								}
-								name = j->name;
-								this->operator()(static_cast<key_type::frs_type>(i->record_number), ji, NULL, 0);
-								if (buffered_matching)
-								{
-									path->erase(path->end() - static_cast<ptrdiff_t>(j->name.length), path->end());
+									if (buffered_matching)
+									{
+										append_directional(*path, &me->names[j->name.offset()], j->name.length, j->name.ascii() ? -1 : 0);
+									}
+									name = j->name;
+									this->operator()(static_cast<key_type::frs_type>(record_number), ji, NULL, 0);
+									if (buffered_matching)
+									{
+										path->erase(path->end() - static_cast<ptrdiff_t>(j->name.length), path->end());
+									}
 								}
 							}
+						}
+						if (record_number == 0x00000006 && depth == 1)
+						{
+							name_index = 0;
+							record_number = 0x00000005;
+							goto START;
 						}
 					}
 					--depth;
@@ -2670,7 +2805,10 @@ private:
 						name_length = name.length;
 						ascii = name.ascii();
 					}
-					func((buffered_matching ? path->data() : &*me->names.begin()) + static_cast<ptrdiff_t>(name_offset), name_length, ascii, new_key, depth);
+					if (frs != 0x00000005 || ((depth > 0) ^ (k->type_name_id == 0))) /* this is to list the root directory at the top level, but its attributes at level 1 */
+					{
+						func((buffered_matching ? path->data() : &*me->names.begin()) + static_cast<ptrdiff_t>(name_offset), name_length, ascii, new_key, depth);
+					}
 					if (buffered_matching)
 					{
 						path->erase(old_size, path->size() - old_size);
@@ -3529,68 +3667,90 @@ class IoCompletionPort
 	}
 	unsigned int worker() volatile
 	{
+		return this->worker(INFINITE);
+	}
+	unsigned int worker(unsigned long const timeout) volatile
+	{
+		unsigned int result = 0;
+		CoInit coinit;
 		ULONG_PTR key;
 		OVERLAPPED *overlapped_ptr;
 		Overlapped *p;
-		HANDLE const handle = this->_handle;
-		for (unsigned long nr; GetQueuedCompletionStatus(handle, &nr, &key, &overlapped_ptr, INFINITE);)
+		try
 		{
-			p = static_cast<Overlapped *>(overlapped_ptr);
-			intrusive_ptr<Overlapped> overlapped(p, false);
-			if (overlapped.get())
+			for (unsigned long nr; GetQueuedCompletionStatus(this->_handle, &nr, &key, &overlapped_ptr, timeout);)
 			{
-				int r = (*overlapped)(static_cast<size_t>(nr), key);
-				if (r > 0) { r = PostQueuedCompletionStatus(handle, nr, key, overlapped_ptr) ? 0 : -1; }
-				if (r >= 0) { overlapped.detach(); }
-			}
-			else if (key == 1)
-			{
-				size_t found = ~size_t();
-				Task task;
+				p = static_cast<Overlapped *>(overlapped_ptr);
+				intrusive_ptr<Overlapped> overlapped(p, false);
+				if (overlapped.get())
 				{
-					lock_ptr<this_type> const me_lock(this);
-					size_t &pending_scan_offset = const_cast<size_t &>(this->_pending_scan_offset);
-					Pending &pending = const_cast<Pending &>(this->_pending);
-					winnt::IO_PRIORITY_HINT found_priority = winnt::MaxIoPriorityTypes;
-					for (size_t o = 0; o != pending.size(); ++o)
+					int r = (*overlapped)(static_cast<size_t>(nr), key);
+					if (r > 0) { r = this->try_post(nr, key, overlapped) ? 0 : -1; }
+					if (r >= 0) { overlapped.detach(); }
+				}
+				else if (key == 1)
+				{
+					size_t found = ~size_t();
+					Task task;
 					{
-						if (pending_scan_offset == 0 || pending_scan_offset > pending.size()) { pending_scan_offset = pending.size(); }
-						--pending_scan_offset;
-						size_t const i = pending_scan_offset;
-						winnt::IO_PRIORITY_HINT const curr_priority = IoPriority::query(reinterpret_cast<uintptr_t>(pending[i].file));
-						if (found_priority == winnt::MaxIoPriorityTypes || curr_priority > found_priority)
+						lock_ptr<this_type> const me_lock(this);
+						size_t &pending_scan_offset = const_cast<size_t &>(this->_pending_scan_offset);
+						Pending &pending = const_cast<Pending &>(this->_pending);
+						winnt::IO_PRIORITY_HINT found_priority = winnt::MaxIoPriorityTypes;
+						for (size_t o = 0; o != pending.size(); ++o)
 						{
-							found = i;
-							found_priority = curr_priority;
+							if (pending_scan_offset == 0 || pending_scan_offset > pending.size()) { pending_scan_offset = pending.size(); }
+							--pending_scan_offset;
+							size_t const i = pending_scan_offset;
+							winnt::IO_PRIORITY_HINT const curr_priority = IoPriority::query(reinterpret_cast<uintptr_t>(pending[i].file));
+							if (found_priority == winnt::MaxIoPriorityTypes || curr_priority > found_priority)
+							{
+								found = i;
+								found_priority = curr_priority;
+							}
+						}
+						if (found < pending.size())
+						{
+							pending_scan_offset = found;
+							task = pending[found];
+							pending.erase(pending.begin() + static_cast<ptrdiff_t>(found));
 						}
 					}
-					if (found < pending.size())
+					if (~found)
 					{
-						pending_scan_offset = found;
-						task = pending[found];
-						pending.erase(pending.begin() + static_cast<ptrdiff_t>(found));
+						this->enqueue(task);
 					}
 				}
-				if (~found)
+				else if (key == 0)
 				{
-					this->enqueue(task);
+					this->_terminated.store(true, atomic_namespace::memory_order_release);
+					this->cancel_thread_ios();
+					break;
 				}
 			}
-			else if (key == 0)
+		}
+		catch (CStructured_Exception &ex)
+		{
+			result = ex.GetSENumber();
+			if (result != ERROR_CANCELLED
+#ifndef _DEBUG
+				&& IsDebuggerPresent()
+#endif
+				)
 			{
-				this->cancel_thread_ios();
-				break;
+				throw;
 			}
 		}
-		return 0;
+		return result;
 	}
 	void enqueue(Task &task) volatile
 	{
-		if (!task.cb || ReadFile(task.file, task.buffer, task.cb, NULL, task.overlapped.get()))
+		bool attempted_reading_file = false;
+		if (!task.cb || (!this->_terminated.load(atomic_namespace::memory_order_acquire) && ((attempted_reading_file = true), ReadFile(task.file, task.buffer, task.cb, NULL, task.overlapped.get()))))
 		{
 			this->post(task.cb, 0, task.overlapped);
 		}
-		else
+		else if (attempted_reading_file)
 		{
 			CheckAndThrow(GetLastError() == ERROR_IO_PENDING);
 			task.overlapped.detach();
@@ -3610,14 +3770,14 @@ class IoCompletionPort
 		}
 	}
 	Handle _handle;
-	atomic_namespace::atomic<bool> _initialized;
+	atomic_namespace::atomic<bool> _initialized, _terminated;
 	std::vector<WorkerThread> _threads;
 	mutable atomic_namespace::recursive_mutex _mutex;
 	Pending _pending;
 	size_t _pending_scan_offset;
 public:
 	~IoCompletionPort() { this->close(); }
-	IoCompletionPort() : _handle(CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0)), _initialized(false), _pending_scan_offset() { }
+	IoCompletionPort() : _handle(CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0)), _initialized(false), _terminated(false), _pending_scan_offset() { }
 	this_type *unvolatile() volatile { return const_cast<this_type *>(this); }
 	this_type const *unvolatile() const volatile { return const_cast<this_type *>(this); }
 	atomic_namespace::recursive_mutex &get_mutex() const volatile { return this->unvolatile()->_mutex; }
@@ -3644,9 +3804,17 @@ public:
 	}
 	void post(unsigned long cb, uintptr_t const key, intrusive_ptr<Overlapped> overlapped) volatile
 	{
-		this->ensure_initialized();
-		CheckAndThrow(!!PostQueuedCompletionStatus(this->_handle, cb, key, overlapped.get()));
+		CheckAndThrow(this->try_post(cb, key, overlapped));
 		overlapped.detach();
+	}
+	bool try_post(unsigned long cb, uintptr_t const key, intrusive_ptr<Overlapped> &overlapped) volatile
+	{
+		this->ensure_initialized();
+		if (!(cb == 0 && key == 0 && !overlapped) && this->_terminated.load(atomic_namespace::memory_order_acquire))
+		{
+			CppRaiseException(ERROR_CANCELLED);
+		}
+		return !!PostQueuedCompletionStatus(this->_handle, cb, key, overlapped.get());
 	}
 	void read_file(HANDLE const file, void *const buffer, unsigned long const cb, intrusive_ptr<Overlapped> const &overlapped) volatile
 	{
@@ -3675,6 +3843,7 @@ public:
 		{ this->post(0, 0, NULL); }
 		this->cancel_thread_ios();
 		this->_threads.clear();  // Destructors ensure all threads terminate
+		this->worker(0 /* dequeue all packets */);
 	}
 };
 
@@ -3946,6 +4115,10 @@ int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t co
 			p->cluster_size = info.BytesPerCluster;
 			p->mft_record_size = info.BytesPerFileRecordSegment;
 			p->mft_capacity = static_cast<unsigned int>(info.MftValidDataLength.QuadPart / info.BytesPerFileRecordSegment);
+			p->mft_zone_start = info.MftZoneStart.QuadPart;
+			p->mft_zone_end = info.MftZoneEnd.QuadPart;
+			p->mft_zone_end = p->mft_zone_start;  // This line suppresses MFT zone inclusion in the "size on disk"
+			p->reserved_clusters.store(info.TotalReserved.QuadPart + p->mft_zone_end - p->mft_zone_start);
 			this->iocp->associate(volume, reinterpret_cast<uintptr_t>(&*p));
 			typedef std::vector<std::pair<unsigned long long, long long> > RP;
 			{
@@ -4406,6 +4579,7 @@ public:
 		SIZE iconSmallSize, iconLargeSize;
 		unsigned long fileAttributes;
 		int iItem;
+		bool already_searched;
 
 		struct MainThreadCallback
 		{
@@ -4477,19 +4651,23 @@ public:
 				BOOL success = FALSE;
 				SetLastError(0);
 				WTL::CIcon iconSmall, iconLarge;
-				for (int pass = 0; pass < 2; ++pass)
+				if (!already_searched)
 				{
-					WTL::CSize const size = pass ? iconLargeSize : iconSmallSize;
-					ULONG const flags = SHGFI_ICON | SHGFI_SHELLICONSIZE | SHGFI_ADDOVERLAYS | //SHGFI_TYPENAME | SHGFI_SYSICONINDEX |
-						(pass ? SHGFI_LARGEICON : SHGFI_SMALLICON);
-					// CoInit com;  // MANDATORY!  Some files, like '.sln' files, won't work without it!
-					success = SHGetFileInfo(normalizedPath.c_str(), fileAttributes, &shfi, sizeof(shfi), flags) != 0;
-					if (!success && (flags & SHGFI_USEFILEATTRIBUTES) == 0)
-					{ success = SHGetFileInfo(normalizedPath.c_str(), fileAttributes, &shfi, sizeof(shfi), flags | SHGFI_USEFILEATTRIBUTES) != 0; }
-					(pass ? iconLarge : iconSmall).Attach(shfi.hIcon);
+					for (int pass = 0; pass < 2; ++pass)
+					{
+						WTL::CSize const size = pass ? iconLargeSize : iconSmallSize;
+						ULONG const flags = SHGFI_ICON | SHGFI_SHELLICONSIZE | SHGFI_ADDOVERLAYS | //SHGFI_TYPENAME | SHGFI_SYSICONINDEX |
+							(pass ? SHGFI_LARGEICON : SHGFI_SMALLICON);
+						// CoInit com;  // MANDATORY!  Some files, like '.sln' files, won't work without it!
+						Wow64Disable const wow64disable(true);
+						success = SHGetFileInfo(normalizedPath.c_str(), fileAttributes, &shfi, sizeof(shfi), flags) != 0;
+						if (!success && (flags & SHGFI_USEFILEATTRIBUTES) == 0)
+						{ success = SHGetFileInfo(normalizedPath.c_str(), fileAttributes, &shfi, sizeof(shfi), flags | SHGFI_USEFILEATTRIBUTES) != 0; }
+						(pass ? iconLarge : iconSmall).Attach(shfi.hIcon);
+					}
 				}
 
-				if (success)
+				if (already_searched || success)
 				{
 					std::tvstring const path_copy(path);
 					int const iItem(iItem);
@@ -4513,7 +4691,8 @@ public:
 		remove_path_stream_and_trailing_sep(path);
 		std::reverse(path.begin(), path.end());
 		ShellInfoCache::const_iterator entry = this->cache.find(path);
-		if (entry == this->cache.end())
+		bool const already_in_cache = entry != this->cache.end();
+		if (!already_in_cache)
 		{
 			WTL::CRect rcClient;
 			this->lvFiles.GetClientRect(&rcClient);
@@ -4552,7 +4731,7 @@ public:
 			SIZE iconSmallSize; this->imgListSmall.GetIconSize(iconSmallSize);
 			SIZE iconSmallLarge; this->imgListLarge.GetIconSize(iconSmallLarge);
 
-			IconLoaderCallback callback = { this, path, iconSmallSize, iconSmallLarge, fileAttributes, iItem };
+			IconLoaderCallback callback = { this, path, iconSmallSize, iconSmallLarge, fileAttributes, iItem, already_in_cache };
 			this->iconLoader->add(callback, timestamp);
 		}
 		return entry->second.iIconSmall;
@@ -4786,7 +4965,7 @@ public:
 				Index::size_info const &info = p->get_sizes(key);
 				switch (SubItem)
 				{
-				case COLUMN_INDEX_SIZE: result.second = info.length; break;
+				case COLUMN_INDEX_SIZE: result.second = (base->variation & 0x1) ? /* sort by space saved */ static_cast<unsigned long long>(info.length - info.allocated) - (1ULL << ((sizeof(unsigned long long) * CHAR_BIT) - 1)) : info.length; break;
 				case COLUMN_INDEX_SIZE_ON_DISK: result.second = (base->variation & 0x1) ? info.bulkiness : info.allocated; break;
 				case COLUMN_INDEX_DESCENDENTS: result.second = info.treesize; break;
 				}
@@ -5599,6 +5778,7 @@ public:
 
 	void RightClick(std::vector<size_t> const &indices, POINT const &point, int const focused)
 	{
+		Wow64Disable const wow64disable(true);
 		LockedResults locked_results(*this);
 		typedef std::vector<size_t> Indices;
 		std::for_each<Indices::const_iterator, LockedResults &>(indices.begin(), indices.end(), locked_results);
@@ -5947,6 +6127,7 @@ public:
 
 	void DoubleClick(int index)
 	{
+		Wow64Disable const wow64disable(true);
 		NtfsIndex const volatile *const i = this->results.item_index(static_cast<size_t>(index));
 		std::tvstring path;
 		path = i->root_path(), lock(i)->get_path(this->results[static_cast<size_t>(index)].key(), path, false);
@@ -6089,6 +6270,7 @@ public:
 			if (found.empty() && !this->type_cache_str.empty())
 			{
 				SHFILEINFO shfi;
+				Wow64Disable const wow64disable(true);
 				if (SHGetFileInfo(this->type_cache_str.c_str(), usable_attributes, &shfi, sizeof(shfi), SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES))
 				{
 					found.append(shfi.szTypeName);
@@ -6755,16 +6937,16 @@ int _tmain(int argc, TCHAR* argv[])
 		module_path.resize(USHRT_MAX, _T('\0'));
 		module_path.resize(GetModuleFileName(hInstance, module_path.empty() ? NULL : &*module_path.begin(), static_cast<unsigned int>(module_path.size())));
 	}
-	if (!IsDebuggerPresent())
+	if (Wow64::is_wow64() && !string_matcher(string_matcher::pattern_regex, string_matcher::pattern_option_case_insensitive, _T("^.*(?:(?:\\.|_)(?:x86|I386|IA32)|32)(?:\\.[^:/\\\\\\.]+)(?::.*)?$")).is_match(module_path.data(), module_path.size()))
 	{
-		HMODULE hKernel32 = NULL;
-		GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCTSTR>(&GetSystemInfo), &hKernel32);
-		typedef BOOL (WINAPI *PIsWow64Process)(IN HANDLE hProcess, OUT PBOOL Wow64Process);
-		PIsWow64Process IsWow64Process = NULL;
-		BOOL isWOW64 = FALSE;
-		if (hKernel32 != NULL && (IsWow64Process = reinterpret_cast<PIsWow64Process>(GetProcAddress(hKernel32, "IsWow64Process"))) != NULL && IsWow64Process(GetCurrentProcess(), &isWOW64) && isWOW64)
+		if (!IsDebuggerPresent())
 		{
-			HRSRC hRsrs = FindResourceEx(NULL, _T("BINARY"), _T("AMD64"), GetUserDefaultUILanguage());
+			HRSRC hRsrs = NULL;
+			WORD langs[] = { GetUserDefaultUILanguage(), MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), MAKELANGID(LANG_NEUTRAL, SUBLANG_SYS_DEFAULT), MAKELANGID(LANG_INVARIANT, SUBLANG_NEUTRAL) };
+			for (size_t ilang = 0; ilang < sizeof(langs) / sizeof(*langs) && !hRsrs; ++ilang)
+			{
+				hRsrs = FindResourceEx(NULL, _T("BINARY"), _T("AMD64"), langs[ilang]);
+			}
 			LPVOID pBinary = LockResource(LoadResource(NULL, hRsrs));
 			if (pBinary)
 			{
