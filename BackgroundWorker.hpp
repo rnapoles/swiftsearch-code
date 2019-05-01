@@ -93,7 +93,7 @@ class BackgroundWorkerImpl : public BackgroundWorker
 	}
 public:
 	BackgroundWorkerImpl(bool coInitialize, long exception_handler(struct _EXCEPTION_POINTERS *))
-		: coInitialize(coInitialize), tid(0), hThread(), hSemaphore(NULL), stop(false), exception_handler(exception_handler)
+		: tid(0), coInitialize(coInitialize), hThread(), hSemaphore(NULL), stop(false), exception_handler(exception_handler)
 	{
 		this->hThread = (HANDLE)_beginthreadex(NULL, 0, entry, this, CREATE_SUSPENDED, &tid);
 		this->hSemaphore = CreateSemaphore(NULL, 0, LONG_MAX, NULL);

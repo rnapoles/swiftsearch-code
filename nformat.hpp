@@ -101,7 +101,7 @@ class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Tra
 #ifdef _ADDFAC
 			has_num_put = std::_HAS(loc, NumPut);
 #else
-			has_num_put = std::has_num_put<NumPut>(loc);
+			has_num_put = std::has_facet<NumPut>(loc);
 #endif
 			if (has_num_put)
 			{

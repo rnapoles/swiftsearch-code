@@ -40,13 +40,17 @@
 #pragma warning(disable: 4624)  // destructor was implicitly defined as deleted because a base class destructor is inaccessible or deleted
 #pragma warning(disable: 4625)  // copy constructor was implicitly defined as deleted
 #pragma warning(disable: 4626)  // assignment operator was implicitly defined as deleted
+#pragma warning(disable: 4643)  // Forward declaring 'member' in namespace std is not permitted by the C++ Standard.
 #pragma warning(disable: 4668)  // 'MACRO' is not defined as a preprocessor macro, replacing with '0' for '#if/#elif'
 #pragma warning(disable: 4710)  // function not inlined
 #pragma warning(disable: 4711)  // function selected for automatic inline expansion
+#pragma warning(disable: 4774)  // format string expected in argument is not a string literal
 #pragma warning(disable: 4820)  // 'n' bytes padding added after data member
 // #pragma warning(disable: 4838)  // conversion requires a narrowing conversion
 #pragma warning(disable: 5026)  // move constructor was implicitly defined as deleted
 #pragma warning(disable: 5027)  // move assignment operator was implicitly defined as deleted
+#pragma warning(disable: 5039)  // Pointer or reference to potentially throwing function passed to extern C function under -EHc. Undefined behavior may occur if this function throws an exception.
+#pragma warning(disable: 5045)  // Compiler will insert Spectre mitigation for memory load if /Qspectre switch specified
 #endif
 
 #ifdef _DEBUG
@@ -57,6 +61,7 @@
 
 #define _USE_MATH_DEFINES 1
 #define _CRT_OBSOLETE_NO_WARNINGS 1
+#define _CRT_NONSTDC_NO_WARNINGS 1
 #define _CRT_SECURE_NO_WARNINGS 1
 #define _SCL_SECURE_NO_WARNINGS 1
 #define _CRT_NON_CONFORMING_SWPRINTFS 1
@@ -70,6 +75,7 @@
 #define NOMINMAX 1
 #define BUILD_WINDOWS 1
 #define BOOST_ALL_NO_LIB 1
+#define BOOST_ALLOW_DEPRECATED_HEADERS 1
 #define BOOST_DISABLE_ASSERTS 1
 #define BOOST_EXCEPTION_DISABLE 1
 
@@ -80,4 +86,9 @@
 #define _STRALIGN_USE_SECURE_CRT 0
 #define __SIZEOF_LONG_LONG__ (ULLONG_MAX / (UCHAR_MAX + 1U) + 1)
 #define __SIZEOF_WCHAR_T__ (WCHAR_MAX / (UCHAR_MAX + 1U) + 1)
+#endif
+
+#ifdef __clang__
+typedef long long __m64 __attribute__((__vector_size__(8)));
+#define _INTEGRAL_MAX_BITS 64
 #endif

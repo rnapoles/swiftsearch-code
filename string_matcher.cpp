@@ -14,6 +14,7 @@
 #pragma warning(disable: 4061)  // enumerator in switch of enum is not explicitly handled by a case label
 #pragma warning(disable: 4127)  // conditional expression is constant
 #pragma warning(disable: 4571)  // Informational: catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught
+#define BOOST_UNORDERED_TUPLE_ARGS 0
 #include <boost/xpressive/regex_error.hpp>
 #ifdef  BOOST_XPR_ENSURE_
 #undef  BOOST_XPR_ENSURE_
@@ -148,19 +149,18 @@ struct string_matcher::base_type
 		pattern_kind kind;
 		pattern_options option;
 		pattern_type pattern;
-		copyable<boost::algorithm::boyer_moore_horspool<iterator> > string_search;
-		copyable<boost::algorithm::boyer_moore_horspool<ci_iterator> > string_search_ci;
 		AnchorType unanchored;
 		bool case_insensitive;
-		size_t pattern_stats[1 << (sizeof(char) * CHAR_BIT)];
+		copyable<boost::algorithm::boyer_moore_horspool<iterator> > string_search;
+		copyable<boost::algorithm::boyer_moore_horspool<ci_iterator> > string_search_ci;
 		match_results_type mr;
 		regex_type re;
 		explicit impl(pattern_kind const kind, pattern_options const option, pattern_type pattern) :
-			kind(kind), option(option), pattern(), unanchored(),
+			kind(kind), option(option), pattern(), unanchored(), case_insensitive(),
 			string_search(pattern.data(), pattern.data()), string_search_ci(ci_iterator(pattern.data()), ci_iterator(pattern.data()))
 		{ pattern.swap(this->pattern); this->init(); }
 		explicit impl(pattern_kind const kind, pattern_options const option, char_type const pattern[], size_t const length) :
-			kind(kind), option(option), pattern(pattern, pattern + static_cast<ptrdiff_t>(length)), unanchored(),
+			kind(kind), option(option), pattern(pattern, pattern + static_cast<ptrdiff_t>(length)), unanchored(), case_insensitive(),
 			string_search(pattern, pattern), string_search_ci(ci_iterator(pattern), ci_iterator(pattern))
 		{ this->init(); }
 		template<class It>
@@ -202,7 +202,8 @@ struct string_matcher::base_type
 					prefix_asterisk = 0;
 					if (suffix_asterisk > this->pattern.size()) { suffix_asterisk = this->pattern.size(); }
 				}
-				if (this->kind == pattern_glob && !std::count(this->pattern.begin(), this->pattern.end(), special_chars_type::question()))
+				size_t const questions = std::count(this->pattern.begin(), this->pattern.end(), special_chars_type::question());
+				if (this->kind == pattern_glob && !questions)
 				{
 					// reduce to pattern_globstar if possible (question marks can make this impossible)
 					pattern_type globstar_pattern;
@@ -217,12 +218,10 @@ struct string_matcher::base_type
 					globstar_pattern.swap(this->pattern);
 					this->kind = pattern_globstar;
 				}
-				if (this->kind == pattern_globstar)
+				if (this->kind == pattern_globstar && !questions)
 				{
-					size_t const questions = std::count(this->pattern.begin(), this->pattern.end(), special_chars_type::question());
 					size_t const middle_asterisk = std::count(this->pattern.begin() + static_cast<ptrdiff_t>(prefix_asterisk), this->pattern.end() - static_cast<ptrdiff_t>(this->pattern.size() - prefix_asterisk < suffix_asterisk ? this->pattern.size() - prefix_asterisk : suffix_asterisk), special_chars_type::asterisk());
-					assert(this->kind == pattern_globstar && "anchoring logic here is only valid for pattern_globstar");
-					if (!middle_asterisk && !questions &&
+					if (!middle_asterisk &&
 						(!prefix_asterisk || prefix_asterisk >= minwild) &&
 						(!suffix_asterisk || suffix_asterisk >= minwild))
 					{
@@ -475,8 +474,8 @@ struct string_matcher::base_type
 			return result;
 		}
 	};
-	impl<wchar_t> wide;
 	impl< char  > narrow;
+	impl<wchar_t> wide;
 
 	explicit base_type(pattern_kind const kind, pattern_options const option, wchar_t const pattern[], size_t const length) : narrow(kind, option, wcstombs(pattern, length)), wide(kind, option, pattern, length) { }
 	explicit base_type(pattern_kind const kind, pattern_options const option,  char   const pattern[], size_t const length) : narrow(kind, option, pattern, length), wide(kind, option, mbstowcs(pattern, length)) { }
@@ -533,6 +532,8 @@ static struct string_matcher_tester
 			X_ASSERT(!string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("*b*")).is_match(_T("a")));
 			X_ASSERT(!string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("?*?")).is_match(_T("a")));
 			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("?*?")).is_match(_T("ab")));
+			X_ASSERT(!string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("a*b")).is_match(_T("a")));
+			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("a*b")).is_match(_T("ab")));
 		}
 
 		X_ASSERT(string_matcher(string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, _T("*?")).is_match(_T("a\\b")));
@@ -558,6 +559,11 @@ static struct string_matcher_tester
 		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**")).is_match(_T("a")));
 		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**")).is_match(_T("a\\")));
 		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("**")).is_match(_T("\\b")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("a**b")).is_match(_T("ab")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("a**b")).is_match(_T("ac")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("a**b")).is_match(_T("acb")));
+		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("a**c**b")).is_match(_T("acb")));
+		X_ASSERT(!string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("a**cd**b")).is_match(_T("acb")));
 
 		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**")).is_match(_T("a\\b\\c\\d\\")));
 		X_ASSERT(string_matcher(string_matcher::pattern_globstar, string_matcher::pattern_option_case_insensitive, _T("*\\**\\")).is_match(_T("a\\b\\c\\d\\")));

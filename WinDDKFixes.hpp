@@ -14,6 +14,7 @@
 #pragma warning(disable: 4619)  // there is no warning number ''
 #pragma warning(disable: 4625)  // copy constructor could not be generated because a base class copy constructor is inaccessible or deleted
 #pragma warning(disable: 4626)  // assignment operator could not be generated because a base class assignment operator is inaccessible or deleted
+#pragma warning(disable: 4643)  // Forward declaring '' in namespace std is not permitted by the C++ Standard.
 #pragma warning(disable: 4668)  // '...' is not defined as a preprocessor macro, replacing with '0' for '#if/#elif'
 #pragma warning(disable: 4710)  // function not inlined
 #pragma warning(disable: 4711)  // function selected for automatic inline expansion
@@ -21,6 +22,61 @@
 #pragma warning(disable: 4820)  // bytes padding added after data member '...'
 #pragma warning(disable: 5026)  // move constructor was implicitly defined as deleted
 #pragma warning(disable: 5027)  // move assignment operator was implicitly defined as deleted
+
+#ifndef __in_z
+#define __in_z
+#endif
+#ifndef __out_z
+#define __out_z
+#endif
+#ifndef _Check_return_
+#define _Check_return_
+#endif
+#ifndef _In_
+#define _In_
+#endif
+#ifndef _In_z_
+#define _In_z_
+#endif
+#ifndef _In_opt_
+#define _In_opt_
+#endif
+#ifndef _In_opt_z_
+#define _In_opt_z_
+#endif
+#ifndef _In_reads_
+#define _In_reads_(_)
+#endif
+#ifndef _Inout_
+#define _Inout_
+#endif
+#ifndef _Inout_updates_
+#define _Inout_updates_(_)
+#endif
+#ifndef _Out_
+#define _Out_
+#endif
+#ifndef _Out_opt_
+#define _Out_opt_
+#endif
+#ifndef _Outptr_
+#define _Outptr_
+#endif
+#ifndef _Outptr_result_z_
+#define _Outptr_result_z_
+#endif
+#ifndef _Outptr_result_maybenull_
+#define _Outptr_result_maybenull_
+#endif
+#ifndef _Out_writes_
+#define _Out_writes_(_)
+#endif
+#ifndef _Out_writes_opt_
+#define _Out_writes_opt_(_)
+#endif
+#ifndef _Field_range_
+#define _Field_range_(min, max)
+#endif
 
 #ifdef  _CSTDLIB_
 #error include <cstdlib> already happened
@@ -37,6 +93,18 @@
 #define _FORWARD_LIST_  // prevent inclusion of this
 #define _TUPLE_  // prevent inclusion of this
 #define _TYPE_TRAITS_  // prevent inclusion of this
+
+#ifndef _CONCATX
+#define _CONCATX(x, y) x ## y
+#endif
+#ifndef _CONCAT
+#define _CONCAT(x, y) _CONCATX(x, y)
+#endif
+
+#ifndef _CRT_STRINGIZE  // Might be already defined in crtdefs.h, but if not...
+#define __CRT_STRINGIZE(Value) #Value
+#define _CRT_STRINGIZE(Value) __CRT_STRINGIZE(Value)
+#endif
 
 #ifndef _XSTD
 #define _X_STD_BEGIN _STD_BEGIN
@@ -87,13 +155,6 @@
 #else
 #define __CLRCALL_PURE_OR_CDECL __cdecl
 #endif
-#endif
-
-#ifndef _In_z_
-#define _In_z_
-#endif
-#ifndef _In_reads_
-#define _In_reads_(_)
 #endif
 
 extern "C" long __cdecl _InterlockedIncrement(long volatile *lpAddend);
@@ -224,6 +285,7 @@ namespace std
 	template<class T> struct common_type<T, T, T> { typedef T type; };
 #if _MSC_VER >= 1900
 	template<class T, T... Vals> struct integer_sequence;
+	static struct piecewise_construct_t { explicit piecewise_construct_t() { } } const piecewise_construct = piecewise_construct_t();
 #endif
 	template<class, class> struct is_same : false_type {};
 	template<class T> struct is_same<T, T> : true_type { };
@@ -267,25 +329,39 @@ namespace std
 	template<class T> T &&forward(typename remove_reference<T>::type& _Arg) _NOEXCEPT { return static_cast<T &&>(_Arg); }
 	template<class T> T &&forward(typename remove_reference<T>::type&& _Arg) _NOEXCEPT { unsigned char bad_forward_call_checker[is_lvalue_reference<T>::value]; return static_cast<T &&>(_Arg); }
 	template<class T> /* TODO: WARN: technically this is a wrong implementation... if is_function<T>::value || is_void<T>::value, it should not add an r-value reference at all */
-	typename T &&declval() _NOEXCEPT;
+	T &&declval() _NOEXCEPT;
 #endif
 }
 
 #ifdef _YVALS
 #error include <yvals.h> already happened
 #endif
+#if defined(_MSC_VER) && _MSC_VER >= 1910
+#define _XKEYCHECK_H
+#define _VCRUNTIME_H
+#define _CRT_BEGIN_C_HEADER __pragma(pack(push, 8)) extern "C" {
+#define _CRT_END_C_HEADER  } __pragma(pack(pop))
+#define mbstate_t mbstate_t_old
+#include <yvals_core.h>
+#undef  mbstate_t
+#undef  _CRT_END_C_HEADER
+#undef  _CRT_BEGIN_C_HEADER
+#undef  _VCRUNTIME_H
+#undef  _XKEYCHECK_H
+#undef __cpp_lib_integer_sequence  // The DDK doesn't define this, but yvals_core.h does
+#undef _CPPLIB_VER  // The DDK doesn't define this, but yvals_core.h does
+#endif
 #include <use_ansi.h>  // do this before #include <yvals.h> to avoid this header being affected
-#if defined(_DLL) && _DLL && defined(_MT) && defined(_CRTIMP)
+#pragma push_macro("_DLL")
+#pragma push_macro("_CRTIMP")
+#pragma push_macro("_MT")
 #undef  _DLL
 #undef  _MT  // so that _Lockit gets optimized out
 #undef  _CRTIMP
 #include <yvals.h>
-#define _CRTIMP __declspec(dllimport)
-#define _MT 1
-#define _DLL 1
-#else
-#include <yvals.h>
-#endif
+#pragma pop_macro("_MT")
+#pragma pop_macro("_CRTIMP")
+#pragma pop_macro("_DLL")
 
 
 #include <cstdio>  // do this before #include <iosfwd> to avoid affecting that header
@@ -293,20 +369,17 @@ namespace std
 #include <cwchar>  // do this before #include <iosfwd> to avoid affecting that header
 #include <xstddef> // do this before #include <iosfwd> to avoid affecting that header
 
-#ifdef _IOSFWD_
-#error include <_IOSFWD_> already happened
-#endif
-#if defined(_DLL) && _DLL && defined(_CRTIMP)
+#pragma push_macro("_DLL")
+#pragma push_macro("_CRTIMP")
 #undef _DLL
 #undef  _CRTIMP
 #define _CRTIMP
-#include <iosfwd>
-#undef  _CRTIMP
-#define _CRTIMP __declspec(dllimport)
-#define _DLL 1
-#else
-#include <iosfwd>
+#ifdef _IOSFWD_
+#error include <_IOSFWD_> already happened
 #endif
+#include <iosfwd>
+#pragma pop_macro("_CRTIMP")
+#pragma pop_macro("_DLL")
 
 namespace std { template<class C, class T, class D = ptrdiff_t, class P = T *, class R = void> struct iterator; }
 #define iterator iterator_bad
@@ -648,35 +721,41 @@ namespace std
 #ifdef _XSTRING_
 #error #include <xstring> already happened
 #endif
-#if defined(_DLL) && _DLL
+#pragma push_macro("_DLL")
 #undef _DLL
 #include <xstring>
-#define _DLL 1
-#else
-#include <xstring>
-#endif
+#pragma pop_macro("_DLL")
 #ifdef _STDEXCEPT_
 #error #include <stdexcept> already happened
 #endif
 #include <stdexcept>  // implicitly #include <xstring>, because we want to get the references to string/wstring out of the way
-#ifdef _STRING_
-#error #include <string> already happened
-#endif
+#define xdigit  blank = space, xdigit  // this is for when #include <xlocale> occurs
+#pragma push_macro("_DLL")
+#undef _DLL
 #ifdef _XLOCALE_
 #error include <xlocale> already happened
 #endif
-#define xdigit  blank = space, xdigit  // this is for when #include <xlocale> occurs
-#if defined(_DLL) && _DLL
-#undef _DLL
 #include <xlocale>  // this is included by <istream>, and we DO want our changing of _DLL to affect it! to prevent ctype<> from being imported
-#define _DLL 1
-#include <istream>  // this is included by <string>, but we don't want our changing of _DLL to affect it
-#undef _DLL
-#include <string>
-#define _DLL 1
-#else
-#include <string>
+#pragma pop_macro("_DLL")
+#ifdef _IOS_
+#error #include <ios> already happened
 #endif
+#include <ios>  // this is included by <ostream>, but we don't want to affect it
+#ifdef _OSTREAM_
+#error #include <ostream> already happened
+#endif
+#include <ostream>  // this is included by <istream>, but we don't want to affect it
+#ifdef _ISTREAM_
+#error #include <istream> already happened
+#endif
+#include <istream>  // this is included by <string>, but we don't want our changing of _DLL to affect it
+#pragma push_macro("_DLL")
+#undef _DLL
+#ifdef _STRING_
+#error #include <string> already happened
+#endif
+#include <string>
+#pragma pop_macro("_DLL")
 #include <algorithm>  // for rotate()
 #undef  xdigit
 	namespace std
@@ -747,7 +826,7 @@ namespace std
 			basic_string_good(typename base_type::const_pointer const begin, typename base_type::const_pointer const end, Ax const &ax = Ax()) : base_type(begin, end, ax) { }
 			basic_string_good(typename base_type::const_pointer const s, typename base_type::size_type const count, Ax const &ax = Ax()) : base_type(s, count, ax) { }
 			basic_string_good(typename base_type::const_pointer const s, Ax const &ax = Ax()) : base_type(s, ax) { }
-			basic_string_good(base_type const &right, size_type const off, size_type const count = base_type::npos, Ax const &ax = Ax()) : base_type(right, off, count, ax) { }
+			basic_string_good(base_type const &right, typename base_type::size_type const off, typename base_type::size_type const count = base_type::npos, Ax const &ax = Ax()) : base_type(right, off, count, ax) { }
 			basic_string_good(base_type base) : base_type() { base.swap(static_cast<base_type &>(*this)); }
 			basic_string_good(vector<Char, Ax> const &base) : base_type() { this->insert(this->end(), base.begin(), base.end()); }
 			// basic_string_good(basic_string_view<Char, Traits> const &other, Ax const &ax = Ax()) : base_type(other.begin(), other.end(), ax) { }
@@ -758,7 +837,7 @@ namespace std
 			typename base_type::reference front() { return *this->base_type::begin(); }
 			typename base_type::const_reference front() const { return *this->base_type::begin(); }
 			using base_type::data;
-			pointer data() { return this->empty() ? NULL : &*this->begin(); }
+			typename base_type::pointer data() { return this->empty() ? NULL : &*this->begin(); }
 #if 0
 			using base_type::insert;
 			this_type &insert(size_type const index, value_type const *const s, size_type const count)
@@ -795,12 +874,12 @@ namespace std
 			template<class Other> bool operator> (Other const &other) const { return H::compare(*this, other) >  0; }
 			template<class Other> bool operator<=(Other const &other) const { return H::compare(*this, other) <= 0; }
 			template<class Other> bool operator>=(Other const &other) const { return H::compare(*this, other) >= 0; }
-			friend bool operator==(const_pointer const left, this_type const &right) { return H::compare(left, right) == 0; }
-			friend bool operator!=(const_pointer const left, this_type const &right) { return H::compare(left, right) != 0; }
-			friend bool operator< (const_pointer const left, this_type const &right) { return H::compare(left, right) <  0; }
-			friend bool operator> (const_pointer const left, this_type const &right) { return H::compare(left, right) >  0; }
-			friend bool operator<=(const_pointer const left, this_type const &right) { return H::compare(left, right) <= 0; }
-			friend bool operator>=(const_pointer const left, this_type const &right) { return H::compare(left, right) >= 0; }
+			friend bool operator==(typename base_type::const_pointer const left, this_type const &right) { return H::compare(left, right) == 0; }
+			friend bool operator!=(typename base_type::const_pointer const left, this_type const &right) { return H::compare(left, right) != 0; }
+			friend bool operator< (typename base_type::const_pointer const left, this_type const &right) { return H::compare(left, right) <  0; }
+			friend bool operator> (typename base_type::const_pointer const left, this_type const &right) { return H::compare(left, right) >  0; }
+			friend bool operator<=(typename base_type::const_pointer const left, this_type const &right) { return H::compare(left, right) <= 0; }
+			friend bool operator>=(typename base_type::const_pointer const left, this_type const &right) { return H::compare(left, right) >= 0; }
 		};
 		template<class Traits, class Alloc> float stof(basic_string<char, Traits, Alloc> const &str) { return atof(static_cast<char const *>(str.c_str())); }
 		template<class Traits, class Alloc> float stof(basic_string<wchar_t, Traits, Alloc> const &str) { return _wtof(static_cast<wchar_t const *>(str.c_str())); }
@@ -811,7 +890,7 @@ namespace std
 		template<class Traits, class Alloc> long long stoll(basic_string<char, Traits, Alloc> const &str) { return _atoi64(static_cast<char const *>(str.c_str())); }
 		template<class Traits, class Alloc> long long stoll(basic_string<wchar_t, Traits, Alloc> const &str) { return _wtoi64(static_cast<wchar_t const *>(str.c_str())); }
 		template<class T> basic_string_good<char> to_string(T const &);
-		template<> inline basic_string_good<char> to_string<int>(int const &value) { char buf[32]; buf[0] = '\0'; return itoa(value, buf, 10); }
+		template<> inline basic_string_good<char> to_string<int>(int const &value) { char buf[32]; buf[0] = '\0'; return _itoa(value, buf, 10); }
 		template<> inline basic_string_good<char> to_string<unsigned int>(unsigned int const &value) { char buf[32]; buf[0] = '\0'; return _ultoa(value, buf, 10); }
 		template<> inline basic_string_good<char> to_string<long>(long const &value) { char buf[32]; buf[0] = '\0'; return _ltoa(value, buf, 10); }
 		template<> inline basic_string_good<char> to_string<unsigned long>(unsigned long const &value) { char buf[32]; buf[0] = '\0'; return _ultoa(value, buf, 10); }
@@ -820,11 +899,13 @@ namespace std
 	}
 
 	// Fixes for 'vector' -- boost::ptr_vector chokes on the old implementation!
+#define vector vector_bad
+#define copy(It1, It2, OutIt) std::copy(It1, It2, OutIt)
 #ifdef _VECTOR_
 #error #include <vector> already happened
 #endif
-#define vector vector_bad
 #include <vector>
+#undef  copy
 #undef  vector
 	namespace std
 	{
@@ -835,6 +916,7 @@ namespace std
 			typedef vector_bad<T, Ax> base_type;
 		public:
 			typedef typename base_type::value_type value_type;
+			typedef typename base_type::size_type size_type;
 			typedef typename base_type::allocator_type allocator_type;
 			typedef typename base_type::allocator_type::      pointer       pointer;
 			typedef typename base_type::allocator_type::const_pointer const_pointer;
@@ -918,6 +1000,11 @@ namespace std
 #endif
 #include <fstream>
 #pragma warning(pop)
+
+#ifdef  _FUNCTIONAL_
+#error include <functional> already happened
+#endif
+#include <functional>
 
 #pragma warning(push)
 #pragma warning(disable: 4512)  // assignment operator could not be generated
