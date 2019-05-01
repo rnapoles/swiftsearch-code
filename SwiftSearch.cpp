@@ -2852,6 +2852,12 @@ struct MatchOperation
 		if (!is_path_pattern && !~pattern.find(_T('*')) && !~pattern.find(_T('?'))) { pattern.insert(pattern.begin(), _T('*')); pattern.insert(pattern.begin(), _T('*')); pattern.insert(pattern.end(), _T('*')); pattern.insert(pattern.end(), _T('*')); }
 		string_matcher(is_regex ? string_matcher::pattern_regex : is_path_pattern ? string_matcher::pattern_globstar : string_matcher::pattern_glob, string_matcher::pattern_option_case_insensitive, pattern.data(), pattern.size()).swap(matcher);
 	}
+	bool prematch(std::tvstring const &root_path) const
+	{
+		return !requires_root_path_match ||
+			root_path.size() >= root_path_optimized_away.size() &&
+			std::equal(root_path.begin(), root_path.begin() + static_cast<ptrdiff_t>(root_path_optimized_away.size()), root_path_optimized_away.begin());
+	}
 	std::tvstring get_current_path(std::tvstring const &root_path) const
 	{
 		std::tvstring current_path = root_path_optimized_away.empty() ? root_path : std::tvstring();
@@ -5422,10 +5428,7 @@ public:
 				bool wait = false;
 				if (selected == ii || selected == 0)
 				{
-					std::tvstring const root_path = p->root_path();
-					if (!matchop.requires_root_path_match ||
-						root_path.size() >= matchop.root_path_optimized_away.size() &&
-						std::equal(root_path.begin(), root_path.begin() + static_cast<ptrdiff_t>(matchop.root_path_optimized_away.size()), matchop.root_path_optimized_away.begin()))
+					if (matchop.prematch(p->root_path()))
 					{
 						wait = true;
 						wait_handles.push_back(p->finished_event());
@@ -7056,20 +7059,33 @@ std::pair<int, std::tstring> extract_and_run_if_needed(HINSTANCE hInstance, int 
 				tempDir.resize(GetTempPath(static_cast<DWORD>(tempDir.size()), &tempDir[0]));
 				if (!tempDir.empty())
 				{
-					std::tstring const module_file_name(basename(module_path.begin(), module_path.end()), module_path.end());
-					std::tstring fileName(module_file_name.begin(), fileext(module_file_name.begin(), module_file_name.end()));
-					fileName.insert(fileName.begin(), tempDir.begin(), tempDir.end());
-					TCHAR tempbuf[10]; fileName.append(_itot(64, tempbuf, 10));
-					fileName.append(_T("_"));
-					fileName.append(get_app_guid());
-					fileName.append(fileext(module_file_name.begin(), module_file_name.end()), module_file_name.end());
+					std::tstring fileName;
 					struct Deleter
 					{
 						std::tstring file;
 						~Deleter() { if (!this->file.empty()) { _tunlink(this->file.c_str()); } }
 					} deleter;
-					bool success;
+					bool success = false;
+					for (int pass = 0; !success && pass < 2; ++pass)
 					{
+						if (pass)
+						{
+							std::tstring const module_file_name(basename(module_path.begin(), module_path.end()), module_path.end());
+							fileName.assign(module_file_name.begin(), fileext(module_file_name.begin(), module_file_name.end()));
+							fileName.insert(fileName.begin(), tempDir.begin(), tempDir.end());
+							TCHAR tempbuf[10]; fileName.append(_itot(64, tempbuf, 10));
+							fileName.append(_T("_"));
+							fileName.append(get_app_guid());
+							fileName.append(fileext(module_file_name.begin(), module_file_name.end()), module_file_name.end());
+						}
+						else
+						{
+							fileName = module_path;
+							fileName.append(_T(":"));
+							TCHAR tempbuf[10]; fileName.append(_itot(64, tempbuf, 10));
+							fileName.append(_T("_"));
+							fileName.append(get_app_guid());
+						}
 						std::filebuf file;
 						std::ios_base::openmode const openmode = std::ios_base::out | std::ios_base::trunc | std::ios_base::binary;
 #if defined(_CPPLIB_VER)
@@ -7138,8 +7154,13 @@ int _tmain(int argc, TCHAR *argv[])
 		HANDLE const
 			stderr_handle = GetStdHandle(STD_ERROR_HANDLE),
 			stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+		int const
+			stderr_fd = _fileno(stderr),
+			stdout_fd = _fileno(stdout);
 		(void)stderr_handle;
 		(void)stdout_handle;
+		(void)stderr_fd;
+		(void)stdout_fd;
 		result = 0;
 		try
 		{
@@ -7172,7 +7193,10 @@ int _tmain(int argc, TCHAR *argv[])
 				}
 				for (size_t i = 0; i != path_names.size(); ++i)
 				{
-					indices.push_back(static_cast<intrusive_ptr<NtfsIndex> >(new NtfsIndex(path_names[i])));
+					if (matchop.prematch(path_names[i]))
+					{
+						indices.push_back(static_cast<intrusive_ptr<NtfsIndex>>(new NtfsIndex(path_names[i])));
+					}
 				}
 			}
 			bool output_everything;
@@ -7232,7 +7256,10 @@ int _tmain(int argc, TCHAR *argv[])
 				}
 				if (i)
 				{
+					unsigned long long nwritten_since_update = 0;
+					int const output = stdout_fd;
 					std::tvstring line_buffer;
+					std::string line_buffer_utf8;
 					std::tvstring const root_path = i->root_path();
 					std::tvstring current_path = matchop.get_current_path(root_path);
 					i->matches([&](TCHAR const *const name, size_t const name_length, bool const ascii, NtfsIndex::key_type const &key, size_t const depth)
@@ -7259,10 +7286,21 @@ int _tmain(int argc, TCHAR *argv[])
 								line_buffer.push_back(_T('\t')); line_buffer += nformat(static_cast<unsigned int>(sizeinfo.treesize));
 							}
 							line_buffer.push_back(_T('\n'));
-							unsigned long cch;
-							if (!stdout_is_tty || !WriteConsole(stdout_handle, line_buffer.data(), static_cast<unsigned int>(line_buffer.size()), &cch, NULL))
+							unsigned long nwritten;
+							if (!stdout_is_tty || (!WriteConsole(stdout_handle, line_buffer.data(), static_cast<unsigned int>(line_buffer.size()), &nwritten, NULL) && GetLastError() == ERROR_INVALID_HANDLE))
 							{
-								_ftprintf(stdout, _T("%.*s"), static_cast<int>(line_buffer.size()), line_buffer.data());
+#if defined(_UNICODE) &&_UNICODE
+								using std::max;
+								line_buffer_utf8.resize(max(line_buffer_utf8.size(), (line_buffer.size() + 1) * 6), _T('\0'));
+								int const cch = WideCharToMultiByte(CP_UTF8, 0, line_buffer.empty() ? NULL : &line_buffer[0], static_cast<int>(line_buffer.size()), &line_buffer_utf8[0], static_cast<int>(line_buffer_utf8.size()), NULL, NULL);
+								if (cch > 0)
+								{
+									nwritten_since_update += _write(output, line_buffer_utf8.data(), sizeof(*line_buffer_utf8.data()) * static_cast<size_t>(cch));
+								}
+#else
+								nwritten_since_update += _write(output, line_buffer.data(), sizeof(*line_buffer.data()) * line_buffer.size());
+#endif
+								line_buffer.clear();
 							}
 							line_buffer.erase(line_buffer.begin(), line_buffer.end());
 						}
