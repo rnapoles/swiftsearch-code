@@ -108,6 +108,11 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|Win32'" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64'" />
+  <ItemDefinitionGroup>
+    <Link Condition="'$(TargetExt)'=='.com'">
+      <Subsystem>Console</Subsystem>
+    </Link>
+  </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <PrecompiledHeader>Use</PrecompiledHeader>

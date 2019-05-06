@@ -147,7 +147,7 @@ public:
 #endif
 	}
 	void append(const_pointer const value, size_type n = npos) { return this->append(value, value + static_cast<ptrdiff_t>(n == npos ? Traits::length(value) : n)); }
-	size_type find(value_type const &value, size_t const offset = 0) const { const_iterator begin = this->begin() + static_cast<difference_type>(offset), end = this->end(); size_type result = static_cast<size_type>(std::find(begin, end, value) - begin); if (result >= static_cast<size_type>(end - begin)) { result = npos; } return result; }
+	size_type find(value_type const &value, size_type const offset = 0) const { const_iterator begin = this->begin() + static_cast<difference_type>(offset), end = this->end(); size_type result = static_cast<size_type>(std::find(begin, end, value) - begin); if (result >= static_cast<size_type>(end - begin)) { result = npos; } else { result += offset; } return result; }
 	const_pointer c_str() { const_pointer p; size_t const n = this->size(); if (n == 0 || this->capacity() <= n || *(&*this->begin() + static_cast<ptrdiff_t>(n)) != value_type()) { this->push_back(value_type()); p = &*this->begin(); this->pop_back(); } else { p = &*this->begin(); } return p; }
 	const_pointer data() const { return this->empty() ? NULL :&*this->begin(); }
 	iterator erase(size_t const pos, size_type const n = npos)
@@ -783,6 +783,7 @@ namespace winnt
 	enum IO_PRIORITY_HINT { IoPriorityVeryLow = 0, IoPriorityLow, IoPriorityNormal, IoPriorityHigh, IoPriorityCritical, MaxIoPriorityTypes };
 	struct FILE_FS_SIZE_INFORMATION { long long TotalAllocationUnits, ActualAvailableAllocationUnits; unsigned long SectorsPerAllocationUnit, BytesPerSector; };
 	struct FILE_FS_ATTRIBUTE_INFORMATION { unsigned long FileSystemAttributes; unsigned long MaximumComponentNameLength; unsigned long FileSystemNameLength; wchar_t FileSystemName[1]; };
+	struct FILE_FS_DEVICE_INFORMATION { unsigned long DeviceType, Characteristics; } fsinfo;
 	union FILE_IO_PRIORITY_HINT_INFORMATION { IO_PRIORITY_HINT PriorityHint; unsigned long long _alignment; };
 	struct TIME_FIELDS { short Year; short Month; short Day; short Hour; short Minute; short Second; short Milliseconds; short Weekday; };
 
@@ -795,6 +796,24 @@ namespace winnt
 	X(RtlNtStatusToDosError, unsigned long NTAPI(IN NTSTATUS NtStatus));
 	X(RtlTimeToTimeFields, VOID NTAPI(LARGE_INTEGER *Time, TIME_FIELDS *TimeFields));
 #undef  X
+}
+
+bool isdevnull(int fd)
+{
+	winnt::IO_STATUS_BLOCK iosb;
+	winnt::FILE_FS_DEVICE_INFORMATION fsinfo;
+	return winnt::NtQueryVolumeInformationFile((HANDLE)_get_osfhandle(fd), &iosb, &fsinfo, sizeof(fsinfo), 4) == 0 && fsinfo.DeviceType == 0x00000015;
+}
+
+bool isdevnull(FILE *f)
+{
+	return isdevnull(
+#ifdef _O_BINARY
+		_fileno(f)
+#else
+		fileno(f)
+#endif
+	);
 }
 
 namespace ntfs
@@ -7148,22 +7167,15 @@ int _tmain(int argc, TCHAR *argv[])
 	}
 	else if (argc > 1)
 	{
-		bool const
-			stderr_is_tty = !!isatty(_fileno(stderr)),
-			stdout_is_tty = !!isatty(_fileno(stdout));
-		HANDLE const
-			stderr_handle = GetStdHandle(STD_ERROR_HANDLE),
-			stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
 		int const
 			stderr_fd = _fileno(stderr),
 			stdout_fd = _fileno(stdout);
-		(void)stderr_handle;
-		(void)stdout_handle;
 		(void)stderr_fd;
 		(void)stdout_fd;
 		result = 0;
 		try
 		{
+			time_t const tbegin = clock();
 			long long const time_zone_bias = get_time_zone_bias();
 			LCID const lcid = GetThreadLocale();
 			NFormat nformat_io((std::locale()));
@@ -7256,12 +7268,54 @@ int _tmain(int argc, TCHAR *argv[])
 				}
 				if (i)
 				{
-					unsigned long long nwritten_since_update = 0;
-					int const output = stdout_fd;
-					std::tvstring line_buffer;
-					std::string line_buffer_utf8;
 					std::tvstring const root_path = i->root_path();
 					std::tvstring current_path = matchop.get_current_path(root_path);
+					class Writer
+					{
+						HANDLE output;
+						bool output_isatty;
+						bool output_isdevnull;
+						size_t max_buffer_size;
+						unsigned long long second_fraction_denominator /* NOTE: Too large a value is useless with clock(); use a more precise timer if needed */;
+						clock_t tprev;
+						unsigned long long nwritten_since_update;
+						std::string line_buffer_utf8;
+					public:
+						explicit Writer(int const output, size_t const max_buffer_size = 0)
+							: output(reinterpret_cast<HANDLE>(_get_osfhandle(output))), output_isatty(!!isatty(output)), output_isdevnull(isdevnull(output)), max_buffer_size(max_buffer_size), second_fraction_denominator(1 << 11), tprev(clock()), nwritten_since_update() { }
+						void operator()(std::tvstring &line_buffer, bool const force = false)
+						{
+							if (!output_isdevnull)
+							{
+								clock_t const tnow = clock();
+								unsigned long nwritten;
+								if (force || line_buffer.size() >= max_buffer_size || (tnow - tprev) * 1000 * second_fraction_denominator >= CLOCKS_PER_SEC)
+								{
+									if ((!output_isatty || (!WriteConsole(output, line_buffer.data(), static_cast<unsigned int>(line_buffer.size()), &nwritten, NULL) && GetLastError() == ERROR_INVALID_HANDLE)))
+									{
+#if defined(_UNICODE) &&_UNICODE
+										using std::max;
+										line_buffer_utf8.resize(max(line_buffer_utf8.size(), (line_buffer.size() + 1) * 6), _T('\0'));
+										int const cch = WideCharToMultiByte(CP_UTF8, 0, line_buffer.empty() ? NULL : &line_buffer[0], static_cast<int>(line_buffer.size()), &line_buffer_utf8[0], static_cast<int>(line_buffer_utf8.size()), NULL, NULL);
+										if (cch > 0)
+										{
+											nwritten_since_update += WriteFile(output, line_buffer_utf8.data(), sizeof(*line_buffer_utf8.data()) * static_cast<size_t>(cch), &nwritten, NULL);
+										}
+#else
+										nwritten_since_update += WriteFile(output, line_buffer.data(), sizeof(*line_buffer.data()) * line_buffer.size(), &nwritten, NULL);
+#endif
+									}
+									line_buffer.clear();
+									tprev = clock();
+								}
+							}
+							else
+							{
+								line_buffer.clear();
+							}
+						}
+					} flush_if_needed(stdout_fd, 1 << 15);
+					std::tvstring line_buffer;
 					i->matches([&](TCHAR const *const name, size_t const name_length, bool const ascii, NtfsIndex::key_type const &key, size_t const depth)
 					/* TODO: Factor out common code from here and GUI-based version! */
 					{
@@ -7286,27 +7340,14 @@ int _tmain(int argc, TCHAR *argv[])
 								line_buffer.push_back(_T('\t')); line_buffer += nformat(static_cast<unsigned int>(sizeinfo.treesize));
 							}
 							line_buffer.push_back(_T('\n'));
-							unsigned long nwritten;
-							if (!stdout_is_tty || (!WriteConsole(stdout_handle, line_buffer.data(), static_cast<unsigned int>(line_buffer.size()), &nwritten, NULL) && GetLastError() == ERROR_INVALID_HANDLE))
-							{
-#if defined(_UNICODE) &&_UNICODE
-								using std::max;
-								line_buffer_utf8.resize(max(line_buffer_utf8.size(), (line_buffer.size() + 1) * 6), _T('\0'));
-								int const cch = WideCharToMultiByte(CP_UTF8, 0, line_buffer.empty() ? NULL : &line_buffer[0], static_cast<int>(line_buffer.size()), &line_buffer_utf8[0], static_cast<int>(line_buffer_utf8.size()), NULL, NULL);
-								if (cch > 0)
-								{
-									nwritten_since_update += _write(output, line_buffer_utf8.data(), sizeof(*line_buffer_utf8.data()) * static_cast<size_t>(cch));
-								}
-#else
-								nwritten_since_update += _write(output, line_buffer.data(), sizeof(*line_buffer.data()) * line_buffer.size());
-#endif
-								line_buffer.clear();
-							}
-							line_buffer.erase(line_buffer.begin(), line_buffer.end());
+							flush_if_needed(line_buffer);
 						}
 					}, current_path, matchop.is_path_pattern, matchop.is_stream_pattern, match_attributes);
+					flush_if_needed(line_buffer, true);
 				}
 			}
+			time_t const tend = clock();
+			_ftprintf(stderr, _T("Finished in %u ms\n"), static_cast<unsigned int>((tend - tbegin) * 1000 / CLOCKS_PER_SEC));
 		}
 		catch (std::invalid_argument &ex)
 		{
