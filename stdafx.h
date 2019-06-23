@@ -92,16 +92,20 @@ namespace WTL { using std::min; using std::max; }
 
 #ifdef __cplusplus
 #pragma warning(push)
+#pragma warning(disable: 4091)  // 'typedef ': ignored on left of '' when no variable is declared
 #pragma warning(disable: 4191)  // 'type cast': unsafe conversion
 #pragma warning(disable: 4265)  // class has virtual functions, but destructor is not virtual
 #pragma warning(disable: 4302)
 #pragma warning(disable: 4365)
-#pragma warning(disable: 4457)  // declaration of 'pstr' hides function parameter
+#pragma warning(disable: 4456)  // declaration hides previous local declaration
+#pragma warning(disable: 4457)  // declaration hides function parameter
 #pragma warning(disable: 4555)  // expression has no effect; expected expression with side-effect
 #pragma warning(disable: 4619)  // there is no warning number ''
+#pragma warning(disable: 4640)  // construction of local static object is not thread-safe
 #pragma warning(disable: 4838)  // conversion requires a narrowing conversion
 #pragma warning(disable: 4917)  // a GUID can only be associated with a class, interface or namespace
 #pragma warning(disable: 4987)  // nonstandard extension used: 'throw (...)'
+#pragma warning(disable: 5038)  // data member will be initialized after data member
 #include <atlbase.h>
 #include <atlapp.h>
 #include <atlcrack.h>

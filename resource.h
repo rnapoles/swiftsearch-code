@@ -88,6 +88,7 @@
 #define IDS_HELP_TRANSLATION_TITLE      183
 #define IDS_HELP_TRANSLATION_BODY       184
 #define IDS_COLUMN_TYPE_HEADER          185
+#define IDS_COPYING_ADS_PROBLEM_BODY    186
 #define IDC_EDITFILENAME                1001
 #define IDC_LISTFILES                   1002
 #define IDC_LISTVOLUMES                 1003

@@ -14,6 +14,7 @@
 #pragma warning(disable: 4061)  // enumerator in switch of enum is not explicitly handled by a case label
 #pragma warning(disable: 4127)  // conditional expression is constant
 #pragma warning(disable: 4571)  // Informational: catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught
+#pragma warning(disable: 4986)  // 'operator new': exception specification does not match previous declaration
 #define BOOST_UNORDERED_TUPLE_ARGS 0
 #include <boost/xpressive/regex_error.hpp>
 #ifdef  BOOST_XPR_ENSURE_

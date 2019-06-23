@@ -20,6 +20,7 @@
 #pragma warning(disable: 4711)  // function selected for automatic inline expansion
 #pragma warning(disable: 4774)  // format string is not a string literal
 #pragma warning(disable: 4820)  // bytes padding added after data member '...'
+#pragma warning(disable: 4986)  // 'operator new': exception specification does not match previous declaration
 #pragma warning(disable: 5026)  // move constructor was implicitly defined as deleted
 #pragma warning(disable: 5027)  // move assignment operator was implicitly defined as deleted
 
@@ -426,7 +427,9 @@ typedef unsigned __int64 _ULonglong;
 #ifdef  _LIMITS_
 #error include <limits> already happened
 #endif
+#define numeric_limits numeric_limits_bad
 #include <limits>
+#undef  numeric_limits
 #ifndef SIZE_MAX
 static size_t const SIZE_MAX = ~size_t();
 #endif
@@ -462,6 +465,25 @@ namespace std
 
 	template<bool B,class T= void> struct enable_if {};
 	template<class T> struct enable_if<true, T> { typedef T type; };
+
+	template<class T> struct numeric_limits : numeric_limits_bad<T> { };
+#if __cplusplus >= 201402L || defined(_MSC_VER) && _MSC_VER >= 1900 /* VC++ requirement for constexpr is 2015; we want constexpr max() for <regex> to work */
+	template<> struct numeric_limits<unsigned char> : numeric_limits_bad<unsigned char>
+	{
+		static constexpr _Ty(min)() { return 0; }
+		static constexpr _Ty(max)() { return UCHAR_MAX; }
+	};
+	template<> struct numeric_limits<unsigned short> : numeric_limits_bad<unsigned short>
+	{
+		static constexpr _Ty(min)() { return 0; }
+		static constexpr _Ty(max)() { return USHRT_MAX; }
+	};
+	template<> struct numeric_limits<unsigned int> : numeric_limits_bad<unsigned int>
+	{
+		static constexpr _Ty(min)() { return 0; }
+		static constexpr _Ty(max)() { return UINT_MAX; }
+	};
+#endif
 
 	// TODO: Conflicts with <boost/limits.hpp> due to BOOST_NO_MS_INT64_NUMERIC_LIMITS
 	// template<> class numeric_limits<long long> { };

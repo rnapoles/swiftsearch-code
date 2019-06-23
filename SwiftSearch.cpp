@@ -1878,7 +1878,7 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	friend struct std::is_scalar<Record>;
 	mutable atomic_namespace::recursive_mutex _mutex;
 	value_initialized<clock_t> _tbegin;
-	value_initialized<bool> _init_called, _failed;
+	value_initialized<bool> _init_called;
 	std::tvstring _root_path;
 	Handle _volume;
 	std::tvstring names;
@@ -1888,6 +1888,7 @@ class NtfsIndex : public RefCounted<NtfsIndex>
 	StreamInfos streaminfos;
 	ChildInfos childinfos;
 	Handle _finished_event;
+	atomic_namespace::atomic<unsigned int> _finished;
 	atomic_namespace::atomic<size_t> _total_names_and_streams;
 	value_initialized<unsigned int> _expected_records;
 	atomic_namespace::atomic<bool> _cancelled;
@@ -1979,7 +1980,7 @@ public:
 	value_initialized<unsigned int> cluster_size;
 	value_initialized<unsigned int> mft_record_size;
 	value_initialized<unsigned int> mft_capacity;
-	NtfsIndex(std::tvstring value) : _root_path(value), _finished_event(CreateEvent(NULL, TRUE, FALSE, NULL)), _total_names_and_streams(0), _cancelled(false), _records_so_far(0), _preprocessed_so_far(0), _perf_reports_circ(1 << 6), _perf_avg_speed(Speed()), reserved_clusters(0)
+	NtfsIndex(std::tvstring value) : _root_path(value), _finished_event(CreateEvent(NULL, TRUE, FALSE, NULL)), _finished(), _total_names_and_streams(0), _cancelled(false), _records_so_far(0), _preprocessed_so_far(0), _perf_reports_circ(1 << 6), _perf_avg_speed(Speed()), reserved_clusters(0)
 	{
 	}
 	~NtfsIndex()
@@ -1989,26 +1990,26 @@ public:
 	void init()
 	{
 		this->_init_called = true;
-		bool success = false;
-		try
-		{
-			std::tvstring path_name = this->_root_path;
-			deldirsep(path_name);
-			if (!path_name.empty() && *path_name.begin() != _T('\\') && *path_name.begin() != _T('/')) { path_name.insert(static_cast<size_t>(0), _T("\\\\.\\")); }
-			Handle volume(CreateFile(path_name.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL));
-			winnt::IO_STATUS_BLOCK iosb;
-			struct : winnt::FILE_FS_ATTRIBUTE_INFORMATION { unsigned char buf[MAX_PATH]; } info = {};
-			if (winnt::NtQueryVolumeInformationFile(volume.value, &iosb, &info, sizeof(info), 5) ||
-				info.FileSystemNameLength != 4 * sizeof(*info.FileSystemName) || std::char_traits<TCHAR>::compare(info.FileSystemName, _T("NTFS"), 4))
-			{ throw std::invalid_argument("invalid volume"); }
-			if (false) { IoPriority::set(reinterpret_cast<uintptr_t>(volume.value), winnt::IoPriorityLow); }
-			volume.swap(this->_volume);
-			success = true;
-		}
-		catch (std::invalid_argument &) {}
-		this->_failed = !success;
-		if (!success) { SetEvent(this->_finished_event); }
+		std::tvstring path_name = this->_root_path;
+		deldirsep(path_name);
+		if (!path_name.empty() && *path_name.begin() != _T('\\') && *path_name.begin() != _T('/')) { path_name.insert(static_cast<size_t>(0), _T("\\\\.\\")); }
+		HANDLE const h = CreateFile(path_name.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
+		CheckAndThrow(h != INVALID_HANDLE_VALUE);
+		Handle volume(h);
+		winnt::IO_STATUS_BLOCK iosb;
+		struct : winnt::FILE_FS_ATTRIBUTE_INFORMATION { unsigned char buf[MAX_PATH]; } info = {};
+		winnt::NTSTATUS status = winnt::NtQueryVolumeInformationFile(volume.value, &iosb, &info, sizeof(info), 5);
+		if (status != 0) { CppRaiseException(winnt::RtlNtStatusToDosError(status)); }
+		if (info.FileSystemNameLength != 4 * sizeof(*info.FileSystemName) || std::char_traits<TCHAR>::compare(info.FileSystemName, _T("NTFS"), 4))
+		{ CppRaiseException(ERROR_UNRECOGNIZED_VOLUME); }
+		if (false) { IoPriority::set(reinterpret_cast<uintptr_t>(volume.value), winnt::IoPriorityLow); }
+		volume.swap(this->_volume);
 		this->_tbegin = clock();
+	}
+	void set_finished(unsigned int const &result)
+	{
+		SetEvent(this->_finished_event);
+		this->_finished = result;
 	}
 	NtfsIndex *unvolatile() volatile { return const_cast<NtfsIndex *>(this); }
 	NtfsIndex const *unvolatile() const volatile { return const_cast<NtfsIndex *>(this); }
@@ -2029,9 +2030,9 @@ public:
 		return total;
 	}
 	std::tvstring const &root_path() const volatile { return const_cast<std::tvstring const &>(this->_root_path); }
-	bool failed() const
+	unsigned int get_finished() const volatile
 	{
-		return this->_failed;
+		return this->_finished.load();
 	}
 	bool cancelled() const volatile
 	{
@@ -3410,6 +3411,7 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 	std::tstring lastProgressText, lastProgressTitle;
 	bool windowCreated;
 	bool windowCreateAttempted;
+	bool windowShowAttempted;
 	TempSwap<ATL::CWindow> setTopmostWindow;
 	int lastProgress, lastProgressTotal;
 	StringLoader LoadString;
@@ -3535,9 +3537,12 @@ class CProgressDialog : private CModifiedDialogImpl<CProgressDialog>, private WT
 	}
 
 public:
+	using Base::IsWindow;
+	HWND GetHWND() const { return this->m_hWnd; }
+
 	enum { UPDATE_INTERVAL = 1000 / 64 };
 	CProgressDialog(ATL::CWindow parent)
-		: Base(true, !!(parent.GetExStyle() & WS_EX_LAYOUTRTL)), canceled(false), invalidated(false), creationTime(GetTickCount()), lastUpdateTime(0), parent(parent), windowCreated(false), windowCreateAttempted(false), lastProgress(0), lastProgressTotal(1)
+		: Base(true, !!(parent.GetExStyle() & WS_EX_LAYOUTRTL)), canceled(false), invalidated(false), creationTime(GetTickCount()), lastUpdateTime(0), parent(parent), windowCreated(false), windowCreateAttempted(false), windowShowAttempted(false), lastProgress(0), lastProgressTotal(1)
 	{
 	}
 
@@ -3594,9 +3599,10 @@ public:
 			this->windowCreated = !!this->Create(parent);
 			this->windowCreateAttempted = true;
 			EnableWindowRecursive(parent, FALSE);
-			if (this->windowCreated) { this->refresh_marquee(); }
+			if (this->windowCreated) { this->windowShowAttempted = !!this->IsWindowVisible(); this->refresh_marquee(); }
 			this->Flush();
 		}
+		if (!this->windowShowAttempted) { this->ShowWindow(SW_SHOW); this->windowShowAttempted = true; }
 	}
 
 	bool HasUserCancelled(unsigned long const now = GetTickCount())
@@ -3973,7 +3979,6 @@ public:
 	void queue_next() volatile;
 	int operator()(size_t const /*size*/, uintptr_t const /*key*/);
 	virtual void preopen() { }
-	virtual void handle_error(CStructured_Exception &ex, TCHAR const *last_action) { (void)ex; }
 };
 class OverlappedNtfsMftReadPayload::ReadOperation : public Overlapped
 {
@@ -4177,22 +4182,25 @@ void OverlappedNtfsMftReadPayload::queue_next() volatile
 }
 int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t const key)
 {
-	TCHAR const *last_action = _T("");
 	int result = -1;
 	intrusive_ptr<NtfsIndex> p = this->p->unvolatile();
-	if (!p->init_called())
+	struct SetFinished
 	{
-		last_action = _T("opening volume");
-		p->init();
-	}
+		intrusive_ptr<NtfsIndex> p;
+		unsigned int result;
+		~SetFinished() { if (p) { p->set_finished(this->result); } }
+	} set_finished = { p };
 	try
 	{
+		if (!p->init_called())
+		{
+			p->init();
+		}
 		if (void *const volume = p->volume())
 		{
 			this->preopen();
 			unsigned long br;
 			NTFS_VOLUME_DATA_BUFFER info;
-			last_action = _T("reading NTFS volume data");
 			CheckAndThrow(DeviceIoControl(volume, FSCTL_GET_NTFS_VOLUME_DATA, NULL, 0, &info, sizeof(info), &br, NULL));
 			this->cluster_size = static_cast<unsigned int>(info.BytesPerCluster);
 			p->cluster_size = info.BytesPerCluster;
@@ -4206,9 +4214,9 @@ int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t co
 			typedef std::vector<std::pair<unsigned long long, long long> > RP;
 			{
 				{
-					last_action = _T("reading $MFT::$BITMAP");
 					long long llsize = 0;
 					RP const ret_ptrs = get_retrieval_pointers((p->root_path() + std::tvstring(_T("$MFT::$BITMAP"))).c_str(), &llsize, info.MftStartLcn.QuadPart, this->p->mft_record_size);
+					if (ret_ptrs.empty()) { CppRaiseException(ERROR_UNRECOGNIZED_VOLUME); }
 					unsigned long long prev_vcn = 0;
 					for (RP::const_iterator i = ret_ptrs.begin(); i != ret_ptrs.end(); ++i)
 					{
@@ -4225,9 +4233,9 @@ int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t co
 					this->nbitmap_chunks_left.store(this->bitmap_ret_ptrs.size(), atomic_namespace::memory_order_release);
 				}
 				{
-					last_action = _T("reading $MFT::$DATA");
 					long long llsize = 0;
 					RP const ret_ptrs = get_retrieval_pointers((p->root_path() + std::tvstring(_T("$MFT::$DATA"))).c_str(), &llsize, info.MftStartLcn.QuadPart, p->mft_record_size);
+					if (ret_ptrs.empty()) { CppRaiseException(ERROR_UNRECOGNIZED_VOLUME); }
 					unsigned long long prev_vcn = 0;
 					for (RP::const_iterator i = ret_ptrs.begin(); i != ret_ptrs.end(); ++i)
 					{
@@ -4243,7 +4251,7 @@ int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t co
 				}
 			}
 			{
-				last_action = _T("enqueueing next read");
+				set_finished.p.reset();  // make sure we don't set this as finished anymore
 				for (int concurrency = 0; concurrency < 2; ++concurrency)
 				{
 					this->queue_next();
@@ -4253,7 +4261,7 @@ int OverlappedNtfsMftReadPayload::operator()(size_t const /*size*/, uintptr_t co
 	}
 	catch (CStructured_Exception &ex)
 	{
-		this->handle_error(ex, last_action);
+		set_finished.result = ex.GetSENumber();
 	}
 	return result;
 }
@@ -4523,7 +4531,7 @@ class CMainDlg : public CModifiedDialogImpl<CMainDlg>, public WTL::CDialogResize
 		if (!result) { result = RegisterWindowMessage(_T("TaskbarCreated")); }
 		return result;
 	}
-	enum { WM_NOTIFYICON = WM_USER + 100 };
+	enum { WM_NOTIFYICON = WM_USER + 100, WM_READY = WM_NOTIFYICON + 1 };
 
 	typedef std::map<std::tvstring, CacheInfo> ShellInfoCache;
 	typedef std::map<std::tvstring, std::tvstring> TypeInfoCache;
@@ -4686,7 +4694,7 @@ public:
 	{
 		setTopmostWindow.reset();
 		UnregisterWait(this->hWait);
-		this->DeleteNotifyIcon();
+		this->ExitBackground();
 		this->iconLoader->clear();
 		this->iocp.close();
 	}
@@ -4971,6 +4979,15 @@ public:
 		for (size_t j = 0; j != path_names.size(); ++j)
 		{
 			this->cmbDrive.AddString(path_names[j].c_str());
+		}
+
+		if (!this->ShouldWaitForWindowVisibleOnStartup())
+		{
+			if (!this->_initialized)
+			{
+				this->_initialized = true;
+				this->PostMessage(WM_READY);
+			}
 		}
 		return TRUE;
 	}
@@ -5416,15 +5433,6 @@ public:
 		bool const shift_pressed = GetKeyState(VK_SHIFT) < 0;
 		bool const control_pressed = GetKeyState(VK_CONTROL) < 0;
 		int const selected = this->cmbDrive.GetCurSel();
-		if (selected != 0)
-		{
-			intrusive_ptr<NtfsIndex> const p = static_cast<NtfsIndex *>(this->cmbDrive.GetItemDataPtr(selected));
-			if (!p || p->failed())
-			{
-				this->MessageBox(this->LoadString(IDS_INVALID_NTFS_VOLUME_BODY), this->LoadString(IDS_ERROR_TITLE), MB_OK | MB_ICONERROR);
-				return;
-			}
-		}
 		this->clear(false, false);
 		WTL::CWaitCursor const wait_cursor;
 		CProgressDialog dlg(*this);
@@ -5486,7 +5494,7 @@ public:
 		Speed::first_type initial_average_amount = Speed::first_type();
 		std::vector<Results> results_at_depths;
 		results_at_depths.reserve(std::numeric_limits<unsigned short>::max() + 1);
-		while (!dlg.HasUserCancelled() && !wait_handles.empty())
+		while (!wait_handles.empty())
 		{
 			if (uintptr_t const volume = reinterpret_cast<uintptr_t>(wait_indices.at(0)->volume()))
 			{
@@ -5498,6 +5506,10 @@ public:
 			unsigned long const wait_result = dlg.WaitMessageLoop(wait_handles.empty() ? NULL : &*wait_handles.begin(), wait_handles.size());
 			if (wait_result == WAIT_TIMEOUT)
 			{
+				if (dlg.HasUserCancelled())
+				{
+					break;
+				}
 				if (dlg.ShouldUpdate())
 				{
 					basic_fast_ostringstream<TCHAR> ss;
@@ -5566,6 +5578,14 @@ public:
 					size_t const current_progress_denominator = i->total_names_and_streams();
 					std::tvstring root_path = i->root_path();
 					std::tvstring current_path = matchop.get_current_path(root_path);
+					unsigned int const task_result = i->get_finished();
+					if (task_result != 0)
+					{
+						if (selected != 0)
+						{
+							(dlg.IsWindow() ? ATL::CWindow(dlg.GetHWND()) : *this).MessageBox(GetAnyErrorText(task_result), this->LoadString(IDS_ERROR_TITLE), MB_OK | MB_ICONERROR);
+						}
+					}
 					try
 					{
 						lock(i)->matches([&dlg, &results_at_depths, &root_path, shift_pressed, this, i, &wait_indices, any_io_pending,
@@ -6101,10 +6121,13 @@ public:
 				unsigned long prev_update_time = GetTickCount();
 				try
 				{
+					bool warned_about_ads = false;
 					for (size_t i = 0; i < locked_indices.size(); ++i)
 					{
 						bool should_flush = i + 1 >= locked_indices.size();
+						size_t const entry_begin_offset = line_buffer.size();
 						bool any = false;
+						bool is_ads = false;
 						for (int c = 0; c < (single_column >= 0 ? 1 : ncolumns); ++c)
 						{
 							int const j = single_column >= 0 ? single_column : displayed_columns[c];
@@ -6114,6 +6137,15 @@ public:
 							this->GetSubItemText(locked_indices[i], j, false, line_buffer, false);
 							if (j == COLUMN_INDEX_PATH)
 							{
+								size_t last_colon_index = line_buffer.size();
+								for (size_t k = begin_offset; k != line_buffer.size(); ++k)
+								{
+									if (line_buffer[k] == _T(':'))
+									{ last_colon_index = k; }
+								}
+								TCHAR const first_char = begin_offset < line_buffer.size() ? line_buffer[begin_offset] : _T('\0');
+								// TODO: This is broken currently
+								is_ads = is_ads || (begin_offset <= last_colon_index && last_colon_index < line_buffer.size() && !(last_colon_index == begin_offset + 1 && (_T('a') <= first_char && first_char <= _T('z') || _T('A') <= first_char && first_char <= _T('Z')) && line_buffer.size() > last_colon_index + 1 && line_buffer.at(last_colon_index + 1) == _T('\\'))) /* TODO: This will fail if we later support paths like \\.\C: */;
 								unsigned long const update_time = GetTickCount();
 								if (dlg.ShouldUpdate(update_time) || i + 1 == locked_indices.size())
 								{
@@ -6170,6 +6202,15 @@ public:
 						{
 							line_buffer.push_back(_T('\r'));
 							line_buffer.push_back(_T('\n'));
+						}
+						if (shell_file_list && is_ads)
+						{
+							if (!warned_about_ads)
+							{
+								(dlg.IsWindow() ? ATL::CWindow(dlg.GetHWND()) : *this).MessageBox(this->LoadString(IDS_COPYING_ADS_PROBLEM_BODY), this->LoadString(IDS_WARNING_TITLE), MB_OK | MB_ICONWARNING);
+								warned_about_ads = true;
+							}
+							line_buffer.erase(line_buffer.begin() + static_cast<ptrdiff_t>(entry_begin_offset), line_buffer.end());
 						}
 						should_flush |= line_buffer.size() >= buffer_size;
 						if (should_flush)
@@ -6480,9 +6521,12 @@ public:
 
 	void OnCancel(UINT /*uNotifyCode*/, int /*nID*/, HWND /*hWnd*/)
 	{
-		if (this->suppress_escapes <= 0 && this->CheckAndCreateIcon(false))
+		if (this->suppress_escapes <= 0)
 		{
-			this->ShowWindow(SW_HIDE);
+			if (this->EnterBackground())
+			{
+				this->ShowWindow(SW_HIDE);
+			}
 		}
 		this->suppress_escapes = 0;
 	}
@@ -6693,40 +6737,53 @@ public:
 		this->SetMsgHandled(FALSE);
 	}
 
+	static bool ShouldWaitForWindowVisibleOnStartup()
+	{
+		STARTUPINFO si;
+		GetStartupInfo(&si);
+		return !((si.dwFlags & STARTF_USESHOWWINDOW) && si.wShowWindow == SW_HIDE);
+	}
+
 	void OnWindowPosChanged(LPWINDOWPOS lpWndPos)
 	{
 		if (lpWndPos->flags & SWP_SHOWWINDOW)
 		{
-			SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
-			this->DeleteNotifyIcon();
-			this->UpdateWindow();
 			if (!this->_initialized)
 			{
 				this->_initialized = true;
-				this->Refresh(true);
-				RegisterWaitForSingleObject(&this->hWait, hEvent, &WaitCallback, this->m_hWnd, INFINITE, WT_EXECUTEINUITHREAD);
+				this->UpdateWindow();
+				this->PostMessage(WM_READY);
 			}
-		}
-		else if (lpWndPos->flags & SWP_HIDEWINDOW)
-		{
-			SetPriorityClass(GetCurrentProcess(), 0x100000 /*PROCESS_MODE_BACKGROUND_BEGIN*/);
-			SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
 		}
 		this->SetMsgHandled(FALSE);
 	}
 
-	void DeleteNotifyIcon()
+	LRESULT OnReady(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam)
 	{
-		NOTIFYICONDATA nid = { sizeof(nid), *this, 0 };
-		Shell_NotifyIcon(NIM_DELETE, &nid);
+		this->Refresh(true);
+		RegisterWaitForSingleObject(&this->hWait, hEvent, &WaitCallback, this->m_hWnd, INFINITE, WT_EXECUTEINUITHREAD);
+		return 0;
+	}
+
+	bool ExitBackground()
+	{
 		SetPriorityClass(GetCurrentProcess(), 0x200000 /*PROCESS_MODE_BACKGROUND_END*/);
+		NOTIFYICONDATA nid = { sizeof(nid), *this, 0 };
+		return !!Shell_NotifyIcon(NIM_DELETE, &nid);
+	}
+
+	bool EnterBackground()
+	{
+		bool result = this->CheckAndCreateIcon(false);
+		SetPriorityClass(GetCurrentProcess(), 0x100000 /*PROCESS_MODE_BACKGROUND_BEGIN*/);
+		return result;
 	}
 
 	BOOL CheckAndCreateIcon(bool checkVisible)
 	{
 		NOTIFYICONDATA nid = { sizeof(nid), *this, 0, NIF_MESSAGE | NIF_ICON | NIF_TIP, WM_NOTIFYICON, this->GetIcon(FALSE) };
 		_tcsncpy(nid.szTip, this->LoadString(IDS_APPNAME), sizeof(nid.szTip) / sizeof(*nid.szTip));
-		return (!checkVisible || !this->IsWindowVisible()) && Shell_NotifyIcon(NIM_ADD, &nid);
+		return (!checkVisible || this->ShouldWaitForWindowVisibleOnStartup() && !this->IsWindowVisible()) && Shell_NotifyIcon(NIM_ADD, &nid);
 	}
 
 	LRESULT OnTaskbarCreated(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/)
@@ -6739,6 +6796,7 @@ public:
 	{
 		if (lParam == WM_LBUTTONUP || lParam == WM_KEYUP)
 		{
+			this->ExitBackground();
 			this->ShowWindow(SW_SHOW);
 		}
 		return 0;
@@ -6933,14 +6991,6 @@ public:
 								dev.dbch_hdevnotify = RegisterDeviceNotification(this->m_hWnd, &dev, DEVICE_NOTIFY_WINDOW_HANDLE);
 							}
 						}
-						void handle_error(CStructured_Exception &ex, TCHAR const *last_action) override
-						{
-							this->OverlappedNtfsMftReadPayload::handle_error(ex, last_action);
-							std::tvstring title(p->root_path());
-							WTL::CString msg;
-							msg.Format(_T("Error %#x while %s"), ex.GetSENumber(), last_action);
-							::MessageBox(this->m_hWnd, msg, title.c_str(), MB_ICONERROR);
-						}
 					};
 					intrusive_ptr<OverlappedNtfsMftReadPayload> p(new OverlappedNtfsMftReadPayloadDerived(this->iocp, q, this->m_hWnd, this->closing_event));
 					this->iocp.post(0, static_cast<uintptr_t>(ii), p);
@@ -6965,6 +7015,7 @@ public:
 		MSG_WM_CLOSE(OnClose)
 		MESSAGE_HANDLER_EX(WM_DEVICECHANGE, OnDeviceChange)  // Don't use MSG_WM_DEVICECHANGE(); it's broken (uses DWORD)
 		MESSAGE_HANDLER_EX(WM_NOTIFYICON, OnNotifyIcon)
+		MESSAGE_HANDLER_EX(WM_READY, OnReady)
 		MESSAGE_HANDLER_EX(WM_TASKBARCREATED(), OnTaskbarCreated)
 		MESSAGE_HANDLER_EX(WM_MOUSEWHEEL, OnMouseWheel)
 		MESSAGE_HANDLER_EX(WM_CONTEXTMENU, OnContextMenu)

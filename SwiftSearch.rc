@@ -66,7 +66,7 @@ BEGIN
 END
 
 IDD_DIALOGPROGRESS DIALOGEX 0, 0, 274, 69
-STYLE DS_SETFONT | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN | WS_CAPTION | WS_THICKFRAME
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CLIPCHILDREN | WS_CAPTION | WS_THICKFRAME
 CAPTION "Dialog"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
@@ -268,6 +268,8 @@ BEGIN
     IDS_HELP_TRANSLATION_BODY 
                             "Translation files may be found on the project website.\r\nThey are generously provided by other users, not by me.\r\n\r\nWould you like to go to the project website?\r\n\r\nYour detected user interface locale is: %s"
     IDS_COLUMN_TYPE_HEADER  "Type"
+    IDS_COPYING_ADS_PROBLEM_BODY 
+                            "You have selected one or more alternate data streams (file names with ':' in them).\r\nThese will be skipped, as they cannot be copied separately from the main file."
 END
 
 #endif    // English (United States) resources

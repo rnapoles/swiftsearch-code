@@ -17,6 +17,7 @@
 #pragma warning(disable: 4061)  // enumerator in switch of enum is not explicitly handled by a case label
 #pragma warning(disable: 4062)  // enumerator in switch of enum is not handled
 #pragma warning(disable: 4100)  // unreferenced formal parameter
+#pragma warning(disable: 4159)  // #pragma pack(pop,...): has popped previously pushed identifier
 #ifndef _DEBUG
 #pragma warning(disable: 4163)  // not available as an intrinsic function  // Only in DDK compilations (which are Release-mode)...
 #endif
