@@ -25,7 +25,7 @@ function generate_mui_file(target_path, langid, langname) {
 		}
 	}
 	var target_mui_path = FileSystemObject.BuildPath(target_mui_dir, target_name + ".mui");
-	var result = system(["MUIRCT", "-q", "MUIConfig.xml", "-g", langid, "-x", langid, target_path, target_ln_path, target_mui_path]);
+	var result = system(CreateCommandLine(["MUIRCT", "-q", "MUIConfig.xml", "-g", langid, "-x", langid, target_path, target_ln_path, target_mui_path]));
 	if (result === 0) {
 		FileSystemObject.DeleteFile(target_ln_path);
 	}
@@ -87,7 +87,8 @@ var CALLBACKS = {
 		result = generate_mui_file(target_path, langid, langname);
 		if (result === 0 && target_dir.endsWith(FileSystemObject.BuildPath(platform, configuration)) /* path is in expected format */ && (platform === "Win32" || platform === "x86")) {
 			WScript.StdErr.WriteLine("Embedding 64-bit executable...");
-			result = system(["ResHacker", "-addoverwrite", target_path, ",", target_path, ",", FileSystemObject.BuildPath(FileSystemObject.BuildPath(FileSystemObject.BuildPath(FileSystemObject.GetParentFolderName(FileSystemObject.GetParentFolderName(target_dir)), "x64"), configuration), target_name), ",", "BINARY", ",", "AMD64", ",", langid]);
+			FileSystemObject.CopyFile(target_path, target_path.replace(/(\.[^\.:]+)/, "32" + "$1"));
+			result = system(CreateCommandLine(["ResHacker", "-addoverwrite", target_path, ",", target_path, ",", FileSystemObject.BuildPath(FileSystemObject.BuildPath(FileSystemObject.BuildPath(FileSystemObject.GetParentFolderName(FileSystemObject.GetParentFolderName(target_dir)), "x64"), configuration), target_name), ",", "BINARY", ",", "AMD64", ",", langid]));
 		}
 		return result;
 	}
@@ -123,13 +124,31 @@ function system(cmdline) {
 		WshShell.ExpandEnvironmentStrings("%ProgramFiles%\\Microsoft SDKs\Windows\v6.0A\Bin")
 	].join(";")
 	try {
-		var cmd = "\"" + WshShell.ExpandEnvironmentStrings("%ComSpec%") + "\"" + " /Q /S /C \"" + CreateCommandLine(cmdline) + "\"";
+		var cmd = "\"" + WshShell.ExpandEnvironmentStrings("%ComSpec%") + "\"" + " /Q /D /S /C \"" + cmdline + "\"";
 		result = WshShell.Run(cmd, 0, true);
 	} finally {
 		WshProcEnv("PATH") = old_path;
 	}
 	return result;
 }
+function exec(cmdline) {
+	var result = null;
+	var process = WshShell.Exec("\"" + WshShell.ExpandEnvironmentStrings("%ComSpec%") + "\"" + " /Q /D /S /C \"" + cmdline + " 2>&1\"");
+	if (process !== null) {
+		try {
+			process.StdIn.Close();
+			WScript.StdOut.Write(process.StdOut.ReadAll());
+			WScript.StdErr.Write(process.StdErr.ReadAll());
+		} finally {
+			process.Terminate();
+		}
+		result = process.ExitCode;
+	} else {
+		result = -1;
+	}
+	return result;
+}
+
 function main(argv) {
 	var result = 0;
 	if (argv.length > 0) {

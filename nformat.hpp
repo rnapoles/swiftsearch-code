@@ -31,23 +31,31 @@ X(wchar_t,   signed long long,  _i64tow,  _wtoi64);
 X(wchar_t, unsigned long long, _ui64tow, _wtoui64);
 #undef  X
 
-template<class OutIt, class Traits = std::char_traits<typename std::iterator_traits<OutIt>::value_type> >
-class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Traits>
+template<class T> struct basic_char { typedef T type; };
+#if defined(__clang__) && !defined(_CPPLIB_VER)
+template<> struct basic_char<wchar_t> { typedef unsigned short type; };
+#endif
+
+template<class OutIt, class Traits = std::char_traits<typename basic_char<typename std::iterator_traits<OutIt>::value_type>::type> >
+class basic_iterator_ios : public std::basic_ios<typename basic_char<typename Traits::char_type>::type, Traits>
 {
 	typedef basic_iterator_ios this_type;
-	typedef std::basic_ios<typename Traits::char_type, Traits> base_type;
+	typedef std::basic_ios<typename basic_char<typename Traits::char_type>::type, Traits> base_type;
 	typedef typename Traits::char_type char_type;
-	typedef std::ctype<char_type> CType;
+	typedef std::ctype<typename basic_char<char_type>::type> CType;
+	typedef std::char_traits<char_type> traits_type;
 	basic_iterator_ios(this_type const &);
 	this_type &operator =(this_type const &);
-	typedef std::numpunct<char_type> NumPunct;
-	typedef std::num_put<char_type, OutIt> NumPut;
+	typedef std::numpunct<typename basic_char<char_type>::type> NumPunct;
+	typedef std::num_put<typename basic_char<char_type>::type, OutIt> NumPut;
 #if defined(_MSC_VER) && !defined(_WIN64) && (!defined(_CPPLIB_VER) || _CPPLIB_VER < 403)
 	struct NumPutHacked : public NumPut
 	{
+		typedef std::ios_base ios_base;
 		typedef TCHAR _E;
 		typedef OutIt _OI;
 		using NumPut::do_put;
+		using NumPut::_Iput;
 		static char *__cdecl _Ifmt(char *_Fmt, const char *_Spec, ios_base::fmtflags _Fl)
 		{
 			char *_S = _Fmt;
@@ -70,24 +78,33 @@ class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Tra
 		}
 #pragma warning(push)
 #pragma warning(disable: 4774)
-		_OI do_put(_OI _F, ios_base& _X, _E _Fill, __int64 _V) const
+		_OI do_put(_OI _F, ios_base &_X, _E _Fill, long _V) const
+		{
+			return this->NumPut::do_put(_F, _X, _Fill, _V);
+		}
+		_OI do_put(_OI _F, ios_base &_X, _E _Fill, unsigned long _V) const
+		{
+			return this->NumPut::do_put(_F, _X, _Fill, _V);
+		}
+		_OI do_put(_OI _F, ios_base& _X, _E _Fill, long long _V) const
 		{
 			char _Buf[2 * _MAX_INT_DIG], _Fmt[12];
 			return (_Iput(_F, _X, _Fill, _Buf, sprintf(_Buf, _Ifmt(_Fmt, "I64lld", _X.flags()), _V)));
 		}
-		_OI do_put(_OI _F, ios_base& _X, _E _Fill, unsigned __int64 _V) const
+		_OI do_put(_OI _F, ios_base& _X, _E _Fill, unsigned long long _V) const
 		{
 			char _Buf[2 * _MAX_INT_DIG], _Fmt[12];
 			return (_Iput(_F, _X, _Fill, _Buf, sprintf(_Buf, _Ifmt(_Fmt, "I64llu", _X.flags()), _V)));
 		}
 #pragma warning(pop)
 		template<class T>
-		_OI put(_OI _F, ios_base& _X, _E _Fill, T const &value) const { return this->do_put(_F, _X, _Fill, value); }
+		_OI put(_OI _F, ios_base &_X, _E _Fill, T const &value) const { return this->do_put(_F, _X, _Fill, value); }
 	};
 #else
 	typedef NumPut NumPutHacked;
 #endif
-	static NumPutHacked const *numput_instance() { NumPutHacked const *p = new NumPutHacked(); return p; }
+	template<class T>
+	static T const *static_instance() { T const *p = NULL; if (!p) { p = new T(); } return p; }
 	std::ios_base *me;
 	NumPunct const *numpunct;
 	std::string numpunct_grouping;
@@ -115,19 +132,32 @@ class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Tra
 			}
 			else
 			{
-				this->num_put = numput_instance();
+				this->num_put = static_instance<NumPutHacked>();
 			}
-			this->numpunct = &
+			bool has_num_punct;
 #ifdef _ADDFAC
-				std::_USE(loc, NumPunct)
+			has_num_punct = std::_HAS(loc, NumPunct);
 #else
-				std::use_facet<NumPunct>(loc)
+			has_num_punct = std::has_facet<NumPunct>(loc);
 #endif
-				;
+			if (has_num_punct)
+			{
+				this->numpunct = &
+#ifdef _ADDFAC
+					std::_USE(loc, NumPunct)
+#else
+					std::use_facet<NumPunct>(loc)
+#endif
+					;
+			}
+			else
+			{
+				this->numpunct = static_instance<NumPunct>();
+			}
 			this->numpunct_grouping = this->numpunct->grouping();
 		}
 	}
-	static void event_callback(std::ios_base::event type, ios_base &base, int)
+	static void event_callback(std::ios_base::event type, std::ios_base &base, int)
 	{
 		return static_cast<this_type &>(base).event_callback(type);
 	}
@@ -155,13 +185,13 @@ class basic_iterator_ios : public std::basic_ios<typename Traits::char_type, Tra
 			if (flags & std::ios_base::hex) { radix = 0x10; }
 			if (flags & std::ios_base::showbase)
 			{
-				if (radix !=   10) { char_type zbuf[16]; basic_conv<char_type>::to_string(T(), zbuf, radix); i = std::copy(zbuf, zbuf + static_cast<ptrdiff_t>(std::char_traits<char_type>::length(zbuf)), i); }
+				if (radix !=   10) { char_type zbuf[16]; basic_conv<char_type>::to_string(T(), zbuf, radix); i = std::copy(zbuf, zbuf + static_cast<ptrdiff_t>(traits_type::length(zbuf)), i); }
 				if (radix == 0x10) { i = basic_conv<char_type>::ex(i); }
 			}
 			char_type buf[2 * _MAX_INT_DIG];
 			buf[0] = char_type();
 			basic_conv<char_type>::to_string(value, buf, radix);
-			size_t n = std::char_traits<char_type>::length(buf);
+			size_t n = traits_type::length(buf);
 			if (flags & std::ios_base::showpos) { T zero = T(); if (value >= zero) { i = basic_conv<char_type>::plus_sign(i); } }
 			size_t const ngroups = this->numpunct_grouping.size();
 			if (ngroups > 0)

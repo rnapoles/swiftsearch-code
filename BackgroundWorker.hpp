@@ -85,7 +85,7 @@ class BackgroundWorkerImpl : public BackgroundWorker
 		{
 			result = me->process();
 		}
-		__except (me->exception_handler ? me->exception_handler(GetExceptionInformation()) : EXCEPTION_CONTINUE_SEARCH)
+		__except (me->exception_handler ? me->exception_handler(static_cast<struct _EXCEPTION_POINTERS *>(GetExceptionInformation())) : EXCEPTION_CONTINUE_SEARCH)
 		{
 			result = GetExceptionCode();
 		}

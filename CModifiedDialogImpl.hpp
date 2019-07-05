@@ -25,15 +25,15 @@ public:
 
 			// Allocate the thunk structure here, where we can fail gracefully.
 
-			result = m_thunk.Init(NULL,NULL);
+			result = this->m_thunk.Init(NULL,NULL);
 			if (result == FALSE)
 			{
 				SetLastError(ERROR_OUTOFMEMORY);
 				return -1;
 			}
 
-			__if_exists(_Module) { _Module.AddCreateWndData(&m_thunk.cd, (CDialogImplBaseT< TBase >*)this); }
-			__if_exists(_AtlWinModule) { _AtlWinModule.AddCreateWndData(&m_thunk.cd, (CDialogImplBaseT< TBase >*)this); }
+			__if_exists(_Module) { _Module.AddCreateWndData(&this->m_thunk.cd, (CDialogImplBaseT< TBase >*)this); }
+			__if_exists(_AtlWinModule) { _AtlWinModule.AddCreateWndData(&this->m_thunk.cd, (CDialogImplBaseT< TBase >*)this); }
 #ifdef _DEBUG
 			m_bModal = true;
 #endif //_DEBUG
@@ -56,14 +56,14 @@ public:
 
 			// Allocate the thunk structure here, where we can fail gracefully.
 
-			result = m_thunk.Init(NULL,NULL);
+			result = this->m_thunk.Init(NULL,NULL);
 			if (result == FALSE)
 			{
 				SetLastError(ERROR_OUTOFMEMORY);
 				return NULL;
 			}
 
-			_Module.AddCreateWndData(&m_thunk.cd, (CDialogImplBaseT< TBase >*)this);
+			_Module.AddCreateWndData(&this->m_thunk.cd, (CDialogImplBaseT< TBase >*)this);
 #ifdef _DEBUG
 			m_bModal = false;
 #endif //_DEBUG

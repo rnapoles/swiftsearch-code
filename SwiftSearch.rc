@@ -132,6 +132,10 @@ BEGIN
         MENUITEM "&Gridlines",                  ID_VIEW_GRIDLINES, CHECKED
         MENUITEM "&Large Icons",                ID_VIEW_LARGEICONS
     END
+    POPUP "&Options"
+    BEGIN
+        MENUITEM "&Fast Path Search (EXPERIMENTAL! might produce WRONG results!)", ID_OPTIONS_FAST_PATH_SEARCH
+    END
     POPUP "&Help"
     BEGIN
         MENUITEM "&Bugs? Features?",            ID_HELP_BUGS

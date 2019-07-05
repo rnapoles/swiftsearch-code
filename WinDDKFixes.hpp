@@ -24,6 +24,46 @@
 #pragma warning(disable: 5026)  // move constructor was implicitly defined as deleted
 #pragma warning(disable: 5027)  // move assignment operator was implicitly defined as deleted
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
+#pragma clang diagnostic ignored "-Wcast-align"
+#pragma clang diagnostic ignored "-Wcast-qual"
+#pragma clang diagnostic ignored "-Wchar-subscripts"
+#pragma clang diagnostic ignored "-Wcomma"
+#pragma clang diagnostic ignored "-Wdangling-else"
+#pragma clang diagnostic ignored "-Wdeprecated"  // warning : definition of implicit copy constructor for '...' is deprecated because it has a user-declared destructor
+#pragma clang diagnostic ignored "-Wdeprecated-dynamic-exception-spec"
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
+#pragma clang diagnostic ignored "-Wdouble-promotion"
+#pragma clang diagnostic ignored "-Wextra-semi"
+#pragma clang diagnostic ignored "-Wfloat-equal"
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#pragma clang diagnostic ignored "-Wignored-pragma-intrinsic"
+#pragma clang diagnostic ignored "-Wimplicit-int-conversion"
+#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+#pragma clang diagnostic ignored "-Wlogical-op-parentheses"
+#pragma clang diagnostic ignored "-Wmicrosoft-cast"
+#pragma clang diagnostic ignored "-Wmicrosoft-template"
+#pragma clang diagnostic ignored "-Wmissing-noreturn"
+#pragma clang diagnostic ignored "-Wnonportable-include-path"
+#pragma clang diagnostic ignored "-Wold-style-cast"
+#pragma clang diagnostic ignored "-Wreorder"
+#pragma clang diagnostic ignored "-Wshadow"
+#pragma clang diagnostic ignored "-Wshorten-64-to-32"
+#pragma clang diagnostic ignored "-Wsign-compare"
+#pragma clang diagnostic ignored "-Wsign-conversion"
+#pragma clang diagnostic ignored "-Wtypename-missing"
+#pragma clang diagnostic ignored "-Wundef"
+#pragma clang diagnostic ignored "-Wuninitialized"
+#pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Wunused-template"
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-value"
+#pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
+#endif
+
 #ifndef __in_z
 #define __in_z
 #endif
@@ -77,6 +117,14 @@
 #endif
 #ifndef _Field_range_
 #define _Field_range_(min, max)
+#endif
+
+#ifndef _CONSTEXPR
+#if __cplusplus >= 201402L || defined(_MSC_VER) && _MSC_VER >= 1900 /* VC++ requirement for constexpr is 2015; we want constexpr max() for <regex> to work */
+#define _CONSTEXPR constexpr
+#else
+#define _CONSTEXPR
+#endif
 #endif
 
 #ifdef  _CSTDLIB_
@@ -169,7 +217,7 @@ extern "C" long __cdecl _InterlockedDecrement(long volatile *lpAddend);
 
 #if __cplusplus >= 201103L || defined(__GXX_EXPERIMENTAL_CXX0X__) || defined(_MSC_VER) && _MSC_VER >= 1600
 #define X_HAS_MOVE_SEMANTICS
-#elif defined(__clang)
+#elif defined(__clang__)
 #if __has_feature(cxx_rvalue_references)
 #define X_HAS_MOVE_SEMANTICS
 #endif
@@ -181,10 +229,11 @@ typedef unsigned _LONGLONG _ULONGLONG;
 extern "C"
 {
 #ifdef _WIN64
-	__declspec(dllimport) __int64 (__stdcall *__stdcall GetProcAddress(struct HINSTANCE__* hModule, char const *lpProcName))();
+	typedef __int64(__stdcall *FARPROC)();
 #else
-	__declspec(dllimport) int (__stdcall *__stdcall GetProcAddress(struct HINSTANCE__* hModule, char const *lpProcName))();
+	typedef int(__stdcall *FARPROC)();
 #endif
+	__declspec(dllimport) FARPROC __stdcall GetProcAddress(struct HINSTANCE__ *hModule, char const *lpProcName);
 	__declspec(dllimport) int __stdcall GetModuleHandleExA(unsigned long dwFlags, char const *lpModuleName, struct HINSTANCE__** phModule);
 	__declspec(dllimport) int __stdcall GetModuleHandleExW(unsigned long dwFlags, wchar_t const *lpModuleName, struct HINSTANCE__** phModule);
 #if defined(_MSC_VER) && _MSC_VER >= 1400
@@ -286,7 +335,7 @@ namespace std
 	template<class T> struct common_type<T, T, T> { typedef T type; };
 #if _MSC_VER >= 1900
 	template<class T, T... Vals> struct integer_sequence;
-	static struct piecewise_construct_t { explicit piecewise_construct_t() { } } const piecewise_construct = piecewise_construct_t();
+	static struct piecewise_construct_t { } const piecewise_construct = piecewise_construct_t();
 #endif
 	template<class, class> struct is_same : false_type {};
 	template<class T> struct is_same<T, T> : true_type { };
@@ -359,11 +408,24 @@ namespace std
 #undef  _DLL
 #undef  _MT  // so that _Lockit gets optimized out
 #undef  _CRTIMP
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmacro-redefined"
+#endif
 #include <yvals.h>
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 #pragma pop_macro("_MT")
 #pragma pop_macro("_CRTIMP")
 #pragma pop_macro("_DLL")
 
+#ifdef assert
+#error include <assert.h> already happened
+#endif
+#define _assert(A, B, C) _assert(const A, const B, C)
+#include <cassert>
+#undef  _assert
 
 #include <cstdio>  // do this before #include <iosfwd> to avoid affecting that header
 #include <cstring> // do this before #include <iosfwd> to avoid affecting that header
@@ -420,7 +482,7 @@ namespace std { template<class RanIt, class T = typename iterator_traits<RanIt>:
 typedef __int64 _Longlong;
 typedef unsigned __int64 _ULonglong;
 
-#ifdef  _INC_MATH_
+#ifdef  _INC_MATH
 #error include <math.h> already happened
 #endif
 #include <math.h>  // ::ceil
@@ -446,8 +508,16 @@ namespace std
 	typedef unsigned long long uintmax_t;
 	using ::ptrdiff_t;
 	using ::size_t;
-	using ::intptr_t;
-	using ::uintptr_t;
+#ifdef  _WIN64
+	typedef long long intptr_t;
+#else
+	typedef _W64 int intptr_t;
+#endif
+#ifdef  _WIN64
+	typedef unsigned long long uintptr_t;
+#else
+	typedef _W64 unsigned int uintptr_t;
+#endif
 	using ::memcmp;
 	using ::memcpy;
 	using ::memset;
@@ -467,23 +537,21 @@ namespace std
 	template<class T> struct enable_if<true, T> { typedef T type; };
 
 	template<class T> struct numeric_limits : numeric_limits_bad<T> { };
-#if __cplusplus >= 201402L || defined(_MSC_VER) && _MSC_VER >= 1900 /* VC++ requirement for constexpr is 2015; we want constexpr max() for <regex> to work */
 	template<> struct numeric_limits<unsigned char> : numeric_limits_bad<unsigned char>
 	{
-		static constexpr _Ty(min)() { return 0; }
-		static constexpr _Ty(max)() { return UCHAR_MAX; }
+		static _CONSTEXPR _Ty(min)() { return 0; }
+		static _CONSTEXPR _Ty(max)() { return UCHAR_MAX; }
 	};
 	template<> struct numeric_limits<unsigned short> : numeric_limits_bad<unsigned short>
 	{
-		static constexpr _Ty(min)() { return 0; }
-		static constexpr _Ty(max)() { return USHRT_MAX; }
+		static _CONSTEXPR _Ty(min)() { return 0; }
+		static _CONSTEXPR _Ty(max)() { return USHRT_MAX; }
 	};
 	template<> struct numeric_limits<unsigned int> : numeric_limits_bad<unsigned int>
 	{
-		static constexpr _Ty(min)() { return 0; }
-		static constexpr _Ty(max)() { return UINT_MAX; }
+		static _CONSTEXPR _Ty(min)() { return 0; }
+		static _CONSTEXPR _Ty(max)() { return UINT_MAX; }
 	};
-#endif
 
 	// TODO: Conflicts with <boost/limits.hpp> due to BOOST_NO_MS_INT64_NUMERIC_LIMITS
 	// template<> class numeric_limits<long long> { };
@@ -521,7 +589,7 @@ namespace std
 
 	template<class C, class _XI>
 	inline insert_iterator<C> inserter(C& _X, _XI _I)
-	{ return (insert_iterator<C>(_X, C::iterator(_I))); }
+	{ return (insert_iterator<C>(_X, typename C::iterator(_I))); }
 
 	template<typename T, typename Sign>
 	struct has_push_back
@@ -600,7 +668,7 @@ namespace std
 		typedef void reference;
 	};
 
-	template<class It> inline typename iterator_traits<It>::iterator_category __cdecl _Iter_cat(It const &) { return iterator_traits<It>::iterator_category(); }
+	template<class It> inline typename iterator_traits<It>::iterator_category __cdecl _Iter_cat(It const &) { return typename iterator_traits<It>::iterator_category(); }
 #if defined(_MSC_VER) && _MSC_VER >= 1800
 	template<class It> using _Iter_value_t = typename iterator_traits<It>::value_type;
 	template<class It> using _Iter_diff_t = typename iterator_traits<It>::difference_type;
@@ -766,11 +834,15 @@ namespace std
 #ifdef _OSTREAM_
 #error #include <ostream> already happened
 #endif
+#define unitbuf ios::unitbuf
 #include <ostream>  // this is included by <istream>, but we don't want to affect it
+#undef  unitbuf
 #ifdef _ISTREAM_
 #error #include <istream> already happened
 #endif
+#define skipws ios::skipws
 #include <istream>  // this is included by <string>, but we don't want our changing of _DLL to affect it
+#undef  skipws
 #pragma push_macro("_DLL")
 #undef _DLL
 #ifdef _STRING_
@@ -973,7 +1045,7 @@ namespace std
 		struct _PVOID
 		{
 			void *p;
-			_PVOID(void *const &p = 0) : p(p) { }
+			_PVOID(void *const &ptr = 0) : p(ptr) { }
 			template<class T> operator T *&() { return reinterpret_cast<T *&>(p); }
 			template<class T> operator T *const &() const { return reinterpret_cast<T *const &>(p); }
 		};
@@ -1009,6 +1081,13 @@ namespace std
 	using std::codecvt;
 #pragma warning(pop)
 
+#ifdef __clang__
+namespace std
+{
+	static ios_base::openmode const in = ios_base::in, out = ios_base::out, trunc = ios_base::trunc;
+}
+#endif
+
 #ifdef  _SSTREAM_
 #error include <sstream> already happened
 #endif
@@ -1017,6 +1096,7 @@ namespace std
 
 #pragma warning(push)
 #pragma warning(disable: 4127)  // conditional expression is constant
+#pragma warning(disable: 5038)  // data member '...' will be initialized after base class '...'
 #ifdef  _FSTREAM_
 #error include <fstream> already happened
 #endif
@@ -1047,7 +1127,7 @@ namespace std
 		typedef set_bad<K, Pr, Ax> base_type;
 	public:
 		explicit set(Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { }
-		set(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax)
+		set(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax) { }
 		template<class It> set(It const &first, It const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { this->insert<It>(first, last); }
 		using base_type::insert;
 		template<class It> void insert(It const &first, It const &last) { for (It i = first; i != last; ++i) { this->base_type::insert(*i); } }
@@ -1059,7 +1139,7 @@ namespace std
 		typedef multiset_bad<K, Pr, Ax> base_type;
 	public:
 		explicit multiset(Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { }
-		multiset(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax)
+		multiset(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax) { }
 		template<class It> multiset(It const &first, It const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { this->insert<It>(first, last); }
 		using base_type::insert;
 		template<class It> void insert(It const &first, It const &last) { for (It i = first; i != last; ++i) { this->base_type::insert(*i); } }
@@ -1085,7 +1165,7 @@ namespace std
 		typedef map_bad<K, V, Pr, Ax> base_type;
 	public:
 		explicit map(Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { }
-		map(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax)
+		map(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax) { }
 		template<class It> map(It const &first, It const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { this->insert<It>(first, last); }
 		using base_type::insert;
 		template<class It> void insert(It const &first, It const &last) { for (It i = first; i != last; ++i) { this->base_type::insert(*i); } }
@@ -1097,7 +1177,7 @@ namespace std
 		typedef multimap_bad<K, V, Pr, Ax> base_type;
 	public:
 		explicit multimap(Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { }
-		multimap(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax)
+		multimap(typename base_type::const_iterator const &first, typename base_type::const_iterator const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(first, last, pred, ax) { }
 		template<class It> multimap(It const &first, It const &last, Pr const &pred = Pr(), Ax const &ax = Ax()) : base_type(pred, ax) { this->insert<It>(first, last); }
 		using base_type::insert;
 		template<class It> void insert(It const &first, It const &last) { for (It i = first; i != last; ++i) { this->base_type::insert(*i); } }
@@ -1112,7 +1192,7 @@ namespace std
 	template<> struct hash<size_t> { size_t operator()(size_t const value) const { return value; } };
 	template<> struct hash<unsigned int> { size_t operator()(unsigned int const value) const { return value; } };
 #else
-	template<> struct hash<unsigned long long> { size_t operator()(unsigned long long const value) const { return value ^ (value >> (CHAR_BIT * sizeof(size_t))); } };
+	template<> struct hash<unsigned long long> { size_t operator()(unsigned long long const value) const { return value ^ (value >> (CHAR_BIT * sizeof(unsigned int))); } };
 	template<> struct hash<size_t> { size_t operator()(size_t const value) const { return value; } };
 #endif
 }
@@ -1525,6 +1605,10 @@ typedef unsigned int UINT;
 #include <ProvExce.h>
 #pragma pop_macro("_set_se_translator")
 
+#endif
+
+#ifdef __clang__
+#pragma clang diagnostic pop
 #endif
 
 #pragma warning(pop)

@@ -126,5 +126,8 @@
     <CustomBuild Include="CxxFrameHandler.asm">
       <Filter>Source Files</Filter>
     </CustomBuild>
+    <CustomBuild Include="Clang-Compile.bat">
+      <Filter>Source Files</Filter>
+    </CustomBuild>
   </ItemGroup>
 </Project>

@@ -1,7 +1,27 @@
 #pragma once
 
-#define _WIN32_WINNT 0x502
-#include <SDKDDKVer.h>
+#ifdef __clang__
+#pragma clang diagnostic ignored "-Wc++98-compat-local-type-template-args"
+#pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+#pragma clang diagnostic ignored "-Wmissing-declarations"
+#pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#pragma clang diagnostic ignored "-Wmissing-noreturn"
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-variable-declarations"
+#pragma clang diagnostic ignored "-Wnon-virtual-dtor"
+#pragma clang diagnostic ignored "-Wold-style-cast"  // TODO: We may want this for linting our own code...
+#pragma clang diagnostic ignored "-Wreserved-id-macro"
+#pragma clang diagnostic ignored "-Wshadow"
+#pragma clang diagnostic ignored "-Wshadow-field-in-constructor"
+#pragma clang diagnostic ignored "-Wswitch-enum"
+#pragma clang diagnostic ignored "-Wunused-macros"  // TODO: We may want this for linting our own code...
+#pragma clang diagnostic ignored "-Wunused-template"  // TODO: We may want this for linting our own code...
+#pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
+#endif
+
+#define _WIN32_WINNT 0x0502
+#define _WIN32_IE 0x0600
 
 #ifdef _MSC_VER
 // ============= Put these FIRST ============
@@ -79,17 +99,37 @@
 #define BOOST_ALLOW_DEPRECATED_HEADERS 1
 #define BOOST_DISABLE_ASSERTS 1
 #define BOOST_EXCEPTION_DISABLE 1
+#define BOOST_NO_CXX11_CHAR16_T
+#define BOOST_NO_CXX11_CHAR32_T
+#define BOOST_NO_SWPRINTF
+#define BOOST_REGEX_NO_FILEITER
 
 #ifndef _DEBUG
 #define _SECURE_SCL 0
 #define _ITERATOR_DEBUG_LEVEL 0
 #define __STDC_WANT_SECURE_LIB__ 0
 #define _STRALIGN_USE_SECURE_CRT 0
+#ifndef __SIZEOF_LONG_LONG__
 #define __SIZEOF_LONG_LONG__ (ULLONG_MAX / (UCHAR_MAX + 1U) + 1)
+#endif
+#ifndef __SIZEOF_WCHAR_T__
 #define __SIZEOF_WCHAR_T__ (WCHAR_MAX / (UCHAR_MAX + 1U) + 1)
+#endif
 #endif
 
 #ifdef __clang__
+#ifdef __GNUC__
 typedef long long __m64 __attribute__((__vector_size__(8)));
+#else
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-declarations"
+#pragma clang diagnostic ignored "-Wignored-attributes"
+#endif
+typedef union __declspec(intrin_type) __declspec(align(8)) __m64;
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+#endif
 #define _INTEGRAL_MAX_BITS 64
 #endif

@@ -1,28 +1,93 @@
 #pragma once
 
 #include "targetver.h"
-#include <stdarg.h>
 
 #pragma warning(push)
+#pragma warning(disable: 4595)  // '...': non-member operator new or delete functions may not be declared inline
 #pragma warning(disable: 4571)  // Informational: catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught
 #include "WinDDKFixes.hpp"
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
+#pragma clang diagnostic ignored "-Wc99-extensions"
+#pragma clang diagnostic ignored "-Wcast-align"
+#pragma clang diagnostic ignored "-Wcast-qual"
+#pragma clang diagnostic ignored "-Wcomment"
+#pragma clang diagnostic ignored "-Wdelete-incomplete"
+#pragma clang diagnostic ignored "-Wdeprecated-dynamic-exception-spec"
+#pragma clang diagnostic ignored "-Wextra-semi"
+#pragma clang diagnostic ignored "-Wextra-semi-stmt"
+#pragma clang diagnostic ignored "-Wfloat-equal"
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
+#pragma clang diagnostic ignored "-Wheader-hygiene"
+#pragma clang diagnostic ignored "-Wignored-attributes"
+#pragma clang diagnostic ignored "-Wignored-attributes"
+#pragma clang diagnostic ignored "-Wignored-pragma-intrinsic"
+#pragma clang diagnostic ignored "-Wignored-pragma-intrinsic"
+#pragma clang diagnostic ignored "-Wint-to-void-pointer-cast"
+#pragma clang diagnostic ignored "-Wint-to-void-pointer-cast"
+#pragma clang diagnostic ignored "-Winvalid-noreturn"
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+#pragma clang diagnostic ignored "-Wkeyword-macro"
+#pragma clang diagnostic ignored "-Wmicrosoft-cast"
+#pragma clang diagnostic ignored "-Wmicrosoft-comment-paste"
+#pragma clang diagnostic ignored "-Wmicrosoft-enum-value"
+#pragma clang diagnostic ignored "-Wmicrosoft-template"
+#pragma clang diagnostic ignored "-Wmissing-declarations"
+#pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#pragma clang diagnostic ignored "-Wmissing-variable-declarations"
+#pragma clang diagnostic ignored "-Wnested-anon-types"
+#pragma clang diagnostic ignored "-Wnonportable-include-path"
+#pragma clang diagnostic ignored "-Wnon-virtual-dtor"
+#pragma clang diagnostic ignored "-Wnon-virtual-dtor"
+#pragma clang diagnostic ignored "-Wold-style-cast"
+#pragma clang diagnostic ignored "-Wpragma-pack"
+#pragma clang diagnostic ignored "-Wpragma-pack"
+#pragma clang diagnostic ignored "-Wshadow"
+#pragma clang diagnostic ignored "-Wsign-conversion"
+#pragma clang diagnostic ignored "-Wunknown-pragmas"
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-value"
+#pragma clang diagnostic ignored "-Wundef"
+#pragma clang diagnostic ignored "-Wvarargs"
+#pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
+#endif
+
 #include <process.h>
 #include <stddef.h>
+#pragma warning(push)
+#pragma warning(disable: 4548)  // expression before comma has no effect; expected expression with side-effect
+#include <malloc.h>  // we include it just to suppress its warning...
+#pragma warning(pop)
+#ifndef assert
 #include <assert.h>
+#endif
+#include <stdarg.h>
 #include <stdio.h>
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-value"
+#endif
 #include <tchar.h>
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 #include <time.h>
 
 #ifdef __cplusplus
+#pragma warning(push)
+#pragma warning(disable: 4574)  // '...' is defined to be '0': did you mean to use '...'
 #include <algorithm>
-#include <cassert>
 #include <fstream>
 #include <iterator>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
+#pragma warning(pop)
 #endif
 #pragma warning(pop)
 
@@ -76,13 +141,32 @@ namespace std
 namespace WTL { using std::min; using std::max; }
 #endif
 
+#ifdef __clang__
+struct __declspec(uuid("00000001-0000-0000-C000-000000000046")) IClassFactory;
+struct __declspec(uuid("000214e6-0000-0000-c000-000000000046")) IShellFolder;
+struct __declspec(uuid("00020412-0000-0000-C000-000000000046")) ITypeInfo2;
+struct __declspec(uuid("00000000-0000-0000-C000-000000000046")) IUnknown;
+#endif
+
 #ifndef _CPPLIB_VER
 #define __movsb __movsb_
 #define __movsd __movsd_
 #define __movsw __movsw_
 #define __movsq __movsq_
 #endif
+#ifdef __clang__
+#define _interlockedbittestandset _interlockedbittestandset_old
+#define _interlockedbittestandreset _interlockedbittestandreset_old
+#define _interlockedbittestandset64 _interlockedbittestandset64_old
+#define _interlockedbittestandreset64 _interlockedbittestandreset64_old
+#endif
 #include <Windows.h>
+#ifdef __clang__
+#undef  _interlockedbittestandreset64
+#undef  _interlockedbittestandset64
+#undef  _interlockedbittestandreset
+#undef  _interlockedbittestandset
+#endif
 #ifndef _CPPLIB_VER
 #undef __movsq
 #undef __movsw
@@ -102,8 +186,10 @@ namespace WTL { using std::min; using std::max; }
 #pragma warning(disable: 4555)  // expression has no effect; expected expression with side-effect
 #pragma warning(disable: 4619)  // there is no warning number ''
 #pragma warning(disable: 4640)  // construction of local static object is not thread-safe
+#pragma warning(disable: 4768)  // __declspec attributes before linkage specification are ignored
 #pragma warning(disable: 4838)  // conversion requires a narrowing conversion
 #pragma warning(disable: 4917)  // a GUID can only be associated with a class, interface or namespace
+#pragma warning(disable: 4986)  // exception specification does not match previous declaration
 #pragma warning(disable: 4987)  // nonstandard extension used: 'throw (...)'
 #pragma warning(disable: 5038)  // data member will be initialized after data member
 #include <atlbase.h>
@@ -120,6 +206,9 @@ extern WTL::CAppModule _Module;
 #pragma warning(pop)
 #endif
 
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 #if defined(__STDC_WANT_SECURE_LIB__) && !__STDC_WANT_SECURE_LIB__
 #if !(defined(_MSC_VER) && _MSC_VER <= 1400)

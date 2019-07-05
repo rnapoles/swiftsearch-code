@@ -65,7 +65,7 @@ private:
 		lf.lfHeight = -MulDiv(wFontSize, GetDeviceCaps(hDC, LOGPIXELSY), 72);
 		lf.lfWeight = FW_NORMAL;
 		lf.lfCharSet = DEFAULT_CHARSET;
-		_tcsncpy(lf.lfFaceName, pszFontFace, _TRUNCATE);
+		_tcsncpy(lf.lfFaceName, pszFontFace, LF_FACESIZE);
 
 		HFONT hNewFont = CreateFontIndirect(&lf);
 		if (hNewFont != NULL)
@@ -204,7 +204,9 @@ public:
 		HGLOBAL hTemplate = LoadResource(hInst, hRsrc);
 		DLGTEMPLATE* pTemplate = (DLGTEMPLATE*)LockResource(hTemplate);
 		BOOL bSet = SetTemplate(pTemplate, (UINT)SizeofResource(hInst, hRsrc));
-		UnlockResource(hTemplate);
+#ifndef UnlockResource  // macro generates warning on Clang
+		UnlockResource(hTemplate);  // just for documentation, but not necessary
+#endif
 		FreeResource(hTemplate);
 		return bSet;
 	}

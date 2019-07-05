@@ -9,7 +9,7 @@ template<class It>
 struct reverse_iterator_impl
 {
 	typedef std::reverse_iterator<It
-#if _CPPLIB_VER < 403
+#if !defined(_CPPLIB_VER) || _CPPLIB_VER < 403
 		, typename std::iterator_traits<It>::value_type
 #endif
 	> reverse_iterator;
@@ -17,14 +17,14 @@ struct reverse_iterator_impl
 };
 template<class It>
 struct reverse_iterator_impl<std::reverse_iterator<It
-#if _CPPLIB_VER < 403
+#if !defined(_CPPLIB_VER) || _CPPLIB_VER < 403
 	, typename std::iterator_traits<It>::value_type
 #endif
 > >
 {
 	typedef It reverse_iterator;
 	static reverse_iterator create(std::reverse_iterator<It
-#if _CPPLIB_VER < 403
+#if !defined(_CPPLIB_VER) || _CPPLIB_VER < 403
 		, typename std::iterator_traits<It>::value_type
 #endif
 	> const it) { return it.base(); }
@@ -44,7 +44,7 @@ inline bool isdirsep(const wchar_t c) { return c == getaltdirsep() || c == getdi
 template<class It>
 bool isrooted(const It &begin, const It &end)
 {
-	return begin != end && (isdirsep(*begin) || end - begin == 2 && *(begin + 1) == _T(':') || end - begin >= 3 && *(begin + 1) == _T(':') && isdirsep(*(begin + 2)));
+	return begin != end && (isdirsep(*begin) || (end - begin == 2 && *(begin + 1) == _T(':')) || (end - begin >= 3 && *(begin + 1) == _T(':') && isdirsep(*(begin + 2))));
 }
 
 template<class FwdIt>

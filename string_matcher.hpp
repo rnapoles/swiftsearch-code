@@ -27,10 +27,10 @@ public:
 	this_type &operator =(this_type other);
 	void swap(this_type &other);
 	friend void swap(this_type &a, this_type &b) { return a.swap(b); }
-	bool is_match(wchar_t const str[], size_t const length = ~size_t()) const;
-	bool is_match(wchar_t const str[], size_t const length = ~size_t());
-	bool is_match( char   const str[], size_t const length = ~size_t()) const;
-	bool is_match( char   const str[], size_t const length = ~size_t());
+	bool is_match(wchar_t const str[], size_t const length = ~size_t(), size_t *const corpus_high_water_mark = NULL) const;
+	bool is_match(wchar_t const str[], size_t const length = ~size_t(), size_t *const corpus_high_water_mark = NULL);
+	bool is_match( char   const str[], size_t const length = ~size_t(), size_t *const corpus_high_water_mark = NULL) const;
+	bool is_match( char   const str[], size_t const length = ~size_t(), size_t *const corpus_high_water_mark = NULL);
 };
 
 template<class Char> Char totlower(Char const c);

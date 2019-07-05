@@ -6,6 +6,10 @@
 #include <iterator>
 #include <string>
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wcomment"
+#endif
 #pragma warning(push)
 #pragma warning(disable: 4456)  // declaration of '...' hides previous local declaration
 #pragma warning(disable: 4619)  // warning: there is no warning number '...'
@@ -14,6 +18,8 @@
 #pragma warning(disable: 4061)  // enumerator in switch of enum is not explicitly handled by a case label
 #pragma warning(disable: 4127)  // conditional expression is constant
 #pragma warning(disable: 4571)  // Informational: catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught
+#pragma warning(disable: 4640)  // '...': construction of local static object is not thread-safe
+#pragma warning(disable: 4702)  // unreachable code
 #pragma warning(disable: 4986)  // 'operator new': exception specification does not match previous declaration
 #define BOOST_UNORDERED_TUPLE_ARGS 0
 #include <boost/xpressive/regex_error.hpp>
@@ -25,24 +31,39 @@
 #endif
 #include <boost/xpressive/match_results.hpp>
 #include <boost/xpressive/xpressive_dynamic.hpp>
+#if defined(__clang__) && !defined(_CPPLIB_VER)
+template<> int boost::xpressive::cpp_regex_traits<wchar_t>::value(wchar_t a, int b) const { return reinterpret_cast<boost::xpressive::cpp_regex_traits<unsigned short> const *>(this)->value(static_cast<unsigned short>(a), b); }
+#endif
 
 namespace regex_namespace = boost::xpressive;
-template<class Char, class Traits = regex_namespace::regex_traits<Char> > struct basic_regex_of { typedef Traits traits_type; typedef regex_namespace::basic_regex<Char const *> type; typedef regex_namespace::match_results<Char const *> match_results_type; template<class It> static type compile(It const &begin, It const &end, regex_namespace::regex_constants::syntax_option_type const flags) { return regex_namespace::regex_compiler<typename type::iterator_type, Traits>().compile(begin, end, flags); } };
+template<class Char, class Traits = regex_namespace::regex_traits<Char>, class BidIt = Char const *> struct basic_regex_of { typedef Traits traits_type; typedef regex_namespace::basic_regex<BidIt> type; typedef regex_namespace::match_results<BidIt> match_results_type; template<class It> static type compile(It const &begin, It const &end, regex_namespace::regex_constants::syntax_option_type const flags) { return regex_namespace::regex_compiler<typename type::iterator_type, Traits>().compile(begin, end, flags); } };
 #elif (!defined(_CPPLIB_VER) || _CPPLIB_VER < 600) && 1
 #include <boost/regex.hpp>
 namespace regex_namespace = boost;
-template<class Char, class Traits = regex_namespace::regex_traits<Char> > struct basic_regex_of { typedef Traits traits_type; typedef regex_namespace::basic_regex<Char        , Traits> type; typedef regex_namespace::match_results<Char const *> match_results_type; template<class It> static type compile(It const &begin, It const &end, regex_namespace::regex_constants::syntax_option_type const flags) { return type(begin, end, flags); } };
+template<class Char, class Traits = regex_namespace::regex_traits<Char>, class BidIt = Char const *> struct basic_regex_of { typedef Traits traits_type; typedef regex_namespace::basic_regex<Char        , Traits> type; typedef regex_namespace::match_results<BidIt> match_results_type; template<class It> static type compile(It const &begin, It const &end, regex_namespace::regex_constants::syntax_option_type const flags) { return type(begin, end, flags); } };
 #else
 #include <regex>
 #ifndef _CPPLIB_VER
 namespace std { _NO_RETURN(_Xregex_error(regex_constants::error_type code) { throw regex_error(code); }) }
 #endif
 namespace regex_namespace = std;
-template<class Char, class Traits = regex_namespace::regex_traits<Char> > struct basic_regex_of { typedef Traits traits_type; typedef regex_namespace::basic_regex<Char        , Traits> type; typedef regex_namespace::match_results<Char const *> match_results_type; template<class It> static type compile(It const &begin, It const &end, regex_namespace::regex_constants::syntax_option_type const flags) { return type(begin, end, flags); } };
+template<class Char, class Traits = regex_namespace::regex_traits<Char>, class BidIt = Char const *> struct basic_regex_of { typedef Traits traits_type; typedef regex_namespace::basic_regex<Char        , Traits> type; typedef regex_namespace::match_results<BidIt> match_results_type; template<class It> static type compile(It const &begin, It const &end, regex_namespace::regex_constants::syntax_option_type const flags) { return type(begin, end, flags); } };
 #endif
+#define _assert(A, B, C) _assert(const A, const B, C)
 #include <boost/algorithm/searching/boyer_moore_horspool.hpp>
+#undef  _assert
 #pragma warning(pop)
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wglobal-constructors"
+#pragma clang diagnostic ignored "-Wshadow"
+#pragma clang diagnostic ignored "-Wshadow-field-in-constructor"
+#pragma clang diagnostic ignored "-Wswitch-enum"
+#endif
 extern "C"
 {
 #ifndef WINBASEAPI
@@ -71,6 +92,53 @@ public:
 	}
 };
 
+template<class It>
+struct tracking_iterator
+{
+	typedef tracking_iterator this_type;
+	typedef typename std::iterator_traits<It>::value_type value_type;
+	struct watermark { It begin; typename std::iterator_traits<It>::difference_type end; watermark() : begin(), end() { } explicit watermark(It const &begin) : begin(begin), end() { } };
+	It p;
+	watermark *c;
+	tracking_iterator(It const &p = It(), watermark *const c = NULL) : p(p), c(c) { }
+	value_type operator *() const { return (*this)[0]; }
+	value_type operator[](ptrdiff_t const i) const
+	{
+		if (this->c)
+		{
+			typename std::iterator_traits<It>::difference_type const d = this->p + i + 1 - this->c->begin;
+			assert(d >= 0);
+			if (this->c->end < d) { this->c->end = d; }
+		}
+		return this->p[i];
+	}
+	this_type &operator++() { return *this += 1; }
+	this_type &operator--() { return *this -= 1; }
+	this_type operator++(int) { this_type me(*this); ++*this; return me; }
+	this_type operator--(int) { this_type me(*this); --*this; return me; }
+	this_type operator +(ptrdiff_t const d) const { this_type me(*this); me += d; return me; }
+	this_type operator -(ptrdiff_t const d) const { this_type me(*this); me -= d; return me; }
+	ptrdiff_t operator -(this_type const other) const { return this->p - other.p; }
+	this_type &operator+=(ptrdiff_t const d) { this->p += d; return *this; }
+	this_type &operator-=(ptrdiff_t const d) { return *this += -d; }
+	bool operator==(this_type const other) const { return this->p == other.p; }
+	bool operator!=(this_type const other) const { return this->p != other.p; }
+	bool operator<=(this_type const other) const { return this->p <= other.p; }
+	bool operator>=(this_type const other) const { return this->p >= other.p; }
+	bool operator< (this_type const other) const { return this->p < other.p; }
+	bool operator> (this_type const other) const { return this->p > other.p; }
+	It base() const { return this->p; }
+};
+
+namespace std
+{
+	template<class It> struct iterator_traits<tracking_iterator<It> > : iterator_traits<It>
+	{
+		// We want to force traversal of the string
+		typedef std::bidirectional_iterator_tag iterator_category;
+	};
+}
+
 template<>  char   totlower< char  >( char   const ch) { return ch <= SCHAR_MAX ?  'A' <= ch && ch <=  'Z' ? static_cast< char  >(ch ^ 0x20) : ch : static_cast< char  >(::tolower (ch)); }
 template<> wchar_t totlower<wchar_t>(wchar_t const ch) { return ch <= SCHAR_MAX ? L'A' <= ch && ch <= L'Z' ? static_cast<wchar_t>(ch ^ 0x20) : ch : static_cast<wchar_t>(::towlower(ch)); }
 template<>  char   totupper< char  >( char   const ch) { return ch <= SCHAR_MAX ?  'a' <= ch && ch <=  'z' ? static_cast< char  >(ch ^ 0x20) : ch : static_cast< char  >(::tolower (ch)); }
@@ -82,16 +150,18 @@ struct case_insensitive_iterator
 	typedef case_insensitive_iterator this_type;
 	typedef typename std::iterator_traits<It>::value_type value_type;
 	It p;
-	explicit case_insensitive_iterator(It const p) : p(p) { }
+	case_insensitive_iterator(It const &p) : p(p) { }
 	value_type operator *() const { return (*this)[0]; }
 	value_type operator[](ptrdiff_t const i) const{ return totlower(this->p[i]); }
-	this_type &operator++() { ++this->p; return *this; }
-	this_type operator++(int) { return this_type(this->p++); }
-	this_type operator +(ptrdiff_t const d) const { return this_type(this->p + d); }
-	this_type operator -(ptrdiff_t const d) const { return this_type(this->p - d); }
+	this_type &operator++() { return *this += 1; }
+	this_type &operator--() { return *this -= 1; }
+	this_type operator++(int) { this_type me(*this); ++ *this; return me; }
+	this_type operator--(int) { this_type me(*this); -- *this; return me; }
+	this_type operator +(ptrdiff_t const d) const { this_type me(*this); me += d; return me; }
+	this_type operator -(ptrdiff_t const d) const { this_type me(*this); me -= d; return me; }
 	ptrdiff_t operator -(this_type const other) const { return this->p - other.p; }
 	this_type &operator+=(ptrdiff_t const d) { this->p += d; return *this; }
-	this_type &operator-=(ptrdiff_t const d) { this->p -= d; return *this; }
+	this_type &operator-=(ptrdiff_t const d) { return *this += -d; }
 	bool operator==(this_type const other) const { return this->p == other.p; }
 	bool operator!=(this_type const other) const { return this->p != other.p; }
 	bool operator<=(this_type const other) const { return this->p <= other.p; }
@@ -139,10 +209,12 @@ struct string_matcher::base_type
 	template<class Char, class Alloc = std::allocator<Char> >
 	struct impl
 	{
-		typedef Char const *iterator;
-		typedef case_insensitive_iterator<iterator> ci_iterator;
-		typedef basic_regex_of<Char, regex_traits<typename basic_regex_of<Char>::traits_type> > basic_regex_of_;
+		typedef Char const *base_iterator;
+		typedef tracking_iterator<base_iterator> iterator;
+		typedef tracking_iterator<case_insensitive_iterator<base_iterator> > ci_iterator;
+		typedef basic_regex_of<Char, regex_traits<typename basic_regex_of<Char>::traits_type>, iterator> basic_regex_of_;
 		typedef typename basic_regex_of_::type regex_type;
+		typedef typename basic_regex_of_::traits_type regex_traits_type;
 		typedef typename basic_regex_of_::match_results_type match_results_type;
 		typedef Char char_type;
 		typedef std::vector<Char, Alloc> pattern_type;
@@ -203,7 +275,7 @@ struct string_matcher::base_type
 					prefix_asterisk = 0;
 					if (suffix_asterisk > this->pattern.size()) { suffix_asterisk = this->pattern.size(); }
 				}
-				size_t const questions = std::count(this->pattern.begin(), this->pattern.end(), special_chars_type::question());
+				size_t const questions = static_cast<size_t>(std::count(this->pattern.begin(), this->pattern.end(), special_chars_type::question()));
 				if (this->kind == pattern_glob && !questions)
 				{
 					// reduce to pattern_globstar if possible (question marks can make this impossible)
@@ -221,7 +293,7 @@ struct string_matcher::base_type
 				}
 				if (this->kind == pattern_globstar && !questions)
 				{
-					size_t const middle_asterisk = std::count(this->pattern.begin() + static_cast<ptrdiff_t>(prefix_asterisk), this->pattern.end() - static_cast<ptrdiff_t>(this->pattern.size() - prefix_asterisk < suffix_asterisk ? this->pattern.size() - prefix_asterisk : suffix_asterisk), special_chars_type::asterisk());
+					size_t const middle_asterisk = static_cast<size_t>(std::count(this->pattern.begin() + static_cast<ptrdiff_t>(prefix_asterisk), this->pattern.end() - static_cast<ptrdiff_t>(this->pattern.size() - prefix_asterisk < suffix_asterisk ? this->pattern.size() - prefix_asterisk : suffix_asterisk), special_chars_type::asterisk()));
 					if (!middle_asterisk &&
 						(!prefix_asterisk || prefix_asterisk >= minwild) &&
 						(!suffix_asterisk || suffix_asterisk >= minwild))
@@ -360,7 +432,7 @@ struct string_matcher::base_type
 					// regex_match is faster than regex_search when dealing with slack ends
 					pattern.push_back(special_chars_type::period());
 					pattern.push_back(special_chars_type::asterisk());
-					this->unanchored = static_cast<AnchorType>(this->unanchored & static_cast<AnchorType>(~UNANCHORED_END));
+					this->unanchored = static_cast<AnchorType>(this->unanchored & ~UNANCHORED_END);
 				}
 				if (!(this->unanchored & UNANCHORED_END) && (this->unanchored & UNANCHORED_BEGIN /* this is just an optimization, because regex_match will take care of it */)) { pattern.push_back(special_chars_type::dollar()); }
 				pattern.swap(this->pattern);
@@ -391,7 +463,7 @@ struct string_matcher::base_type
 				}
 			}
 		}
-		bool is_match_verbatim(char_type const *const corpus_begin, char_type const *const corpus_end) const
+		bool is_match_verbatim(char_type const *const corpus_begin, char_type const *const corpus_end, size_t *const corpus_high_water_mark) const
 		{
 			bool result;
 			typedef char_type const *corpus_iterator;
@@ -402,74 +474,95 @@ struct string_matcher::base_type
 			size_t const
 				corpus_length = static_cast<size_t>(std::distance(corpus_begin, corpus_end)),
 				pattern_length = static_cast<size_t>(std::distance(pattern_begin, this->pattern.end()));
-			if (corpus_length < pattern_length)
-			{
-				result = false;
-			}
-			else if (unanchored_end)
+			if (corpus_high_water_mark) { *corpus_high_water_mark = corpus_length; }
+			if (unanchored_end)
 			{
 				if (unanchored_begin)  // substring
 				{
-					result = (case_insensitive
-						? this->string_search_ci(ci_iterator(corpus_begin), ci_iterator(corpus_end)).first.base()
-						: this->string_search(corpus_begin, corpus_end).first) != corpus_end;
+					if (pattern_length <= corpus_length)
+					{
+						result = (case_insensitive
+							? this->string_search_ci(ci_iterator(corpus_begin), ci_iterator(corpus_end)).first.base()
+							: this->string_search(iterator(corpus_begin), iterator(corpus_end)).first.base()) != corpus_end;
+					}
+					else { result = false; }
 				}
 				else  // prefix
 				{
-					corpus_iterator const corpus_match_end = corpus_begin + static_cast<ptrdiff_t>(pattern_length);
-					result = (case_insensitive
-						? std::equal(ci_iterator(corpus_begin), ci_iterator(corpus_match_end), ci_iterator(pattern_length ? &*pattern_begin : NULL))
-						: std::equal(corpus_begin, corpus_match_end, pattern_begin));
+					typename iterator::watermark wm(corpus_begin), *pwm = corpus_high_water_mark ? &wm : NULL;
+					typename ci_iterator::watermark wm_ci(corpus_begin), *pwm_ci = corpus_high_water_mark ? &wm_ci : NULL;
+					if (pattern_length <= corpus_length)
+					{
+						corpus_iterator const corpus_match_end = corpus_begin + static_cast<ptrdiff_t>(pattern_length);
+						assert(corpus_match_end <= corpus_end && "out-of-bounds access! Fix!");
+						result = (case_insensitive
+							? std::equal(ci_iterator(corpus_begin, pwm_ci), ci_iterator(corpus_match_end, pwm_ci), ci_iterator(pattern_length ? &*pattern_begin : NULL))
+							: std::equal(iterator(corpus_begin, pwm), iterator(corpus_match_end, pwm), pattern_begin));
+						if (corpus_high_water_mark) { *corpus_high_water_mark = static_cast<size_t>(case_insensitive ? pwm_ci->end : pwm->end); }
+					}
+					else { result = false; }
 				}
 			}
 			else
 			{
 				if (unanchored_begin)  // suffix
 				{
-					corpus_iterator const corpus_match_begin = corpus_end - static_cast<ptrdiff_t>(pattern_length);
-					result = (case_insensitive
-						? std::equal(ci_iterator(corpus_match_begin), ci_iterator(corpus_end), ci_iterator(pattern_length ? &*pattern_begin : NULL))
-						: std::equal(corpus_match_begin, corpus_end, pattern_begin));
+					if (pattern_length <= corpus_length)
+					{
+						corpus_iterator const corpus_match_begin = corpus_end - static_cast<ptrdiff_t>(pattern_length);
+						assert(corpus_match_begin >= corpus_begin && "out-of-bounds access! Fix!");
+						result = (case_insensitive
+							? std::equal(ci_iterator(corpus_match_begin), ci_iterator(corpus_end), ci_iterator(pattern_length ? &*pattern_begin : NULL))
+							: std::equal(iterator(corpus_match_begin), iterator(corpus_end), pattern_begin));
+					}
+					else { result = false; }
 				}
 				else  // full string
 				{
-					result = corpus_length == pattern_length && (case_insensitive
-						? std::equal(ci_iterator(corpus_begin), ci_iterator(corpus_end), ci_iterator(pattern_length ? &*pattern_begin : NULL))
-						: std::equal(corpus_begin, corpus_end, pattern_begin));
+					if (pattern_length == corpus_length)
+					{
+						result = (case_insensitive
+							? std::equal(ci_iterator(corpus_begin), ci_iterator(corpus_end), ci_iterator(pattern_length ? &*pattern_begin : NULL))
+							: std::equal(iterator(corpus_begin), iterator(corpus_end), pattern_begin));
+					}
+					else { result = false; }
 				}
 			}
 			return result;
 		}
-		bool is_match_regex(char_type const *const corpus_begin, char_type const *const corpus_end, match_results_type *const mr = NULL) const
+		bool is_match_regex(char_type const *const corpus_begin, char_type const *const corpus_end, size_t *const corpus_high_water_mark, match_results_type *const mr) const
 		{
+			typename iterator::watermark wm(corpus_begin), *pwm = corpus_high_water_mark ? &wm : NULL;
+			iterator cb(corpus_begin, pwm), ce(corpus_end, pwm);
 			bool result;
 			result = this->unanchored
-				? (mr ? regex_namespace::regex_search(corpus_begin, corpus_end, *mr, this->re) : regex_namespace::regex_search(corpus_begin, corpus_end, this->re))
-				: (mr ? regex_namespace::regex_match(corpus_begin, corpus_end, *mr, this->re) : regex_namespace::regex_match(corpus_begin, corpus_end, this->re));
+				? (mr ? regex_namespace::regex_search(cb, ce, *mr, this->re) : regex_namespace::regex_search(cb, ce, this->re))
+				: (mr ? regex_namespace::regex_match(cb, ce, *mr, this->re) : regex_namespace::regex_match(cb, ce, this->re));
+			if (corpus_high_water_mark) { *corpus_high_water_mark = static_cast<size_t>(pwm->end); }
 			return result;
 		}
-		bool is_match(char_type const corpus[], size_t const length)
+		bool is_match(char_type const corpus[], size_t const length, size_t *const corpus_high_water_mark)
 		{
 			char_type const *const corpus_end = corpus + static_cast<ptrdiff_t>(length);
 			bool result;
 			switch (this->kind)
 			{
 			case pattern_anything: result = true; break;
-			case pattern_verbatim: result = this->is_match_verbatim(corpus, corpus_end); break;
-			case pattern_regex: result = this->is_match_regex(corpus, corpus_end, &this->mr); break;
+			case pattern_verbatim: result = this->is_match_verbatim(corpus, corpus_end, corpus_high_water_mark); break;
+			case pattern_regex: result = this->is_match_regex(corpus, corpus_end, corpus_high_water_mark, &this->mr); break;
 			default: __debugbreak(); result = false; break;
 			}
 			return result;
 		}
-		bool is_match(char_type const corpus[], size_t const length) const
+		bool is_match(char_type const corpus[], size_t const length, size_t *const corpus_high_water_mark) const
 		{
 			char_type const *const corpus_end = corpus + static_cast<ptrdiff_t>(length);
 			bool result;
 			switch (this->kind)
 			{
 			case pattern_anything: result = true; break;
-			case pattern_verbatim: result = this->is_match_verbatim(corpus, corpus_end); break;
-			case pattern_regex: result = this->is_match_regex(corpus, corpus_end); break;
+			case pattern_verbatim: result = this->is_match_verbatim(corpus, corpus_end, corpus_high_water_mark); break;
+			case pattern_regex: result = this->is_match_regex(corpus, corpus_end, corpus_high_water_mark, NULL); break;
 			default: __debugbreak(); result = false; break;
 			}
 			return result;
@@ -510,10 +603,10 @@ string_matcher::string_matcher() : p() { }
 string_matcher::string_matcher(pattern_kind const kind, pattern_options const option, wchar_t const pattern[], size_t const length) : p(new base_type(kind, option, pattern, base_type::tcslen(pattern, length))) { }
 string_matcher::string_matcher(pattern_kind const kind, pattern_options const option,  char   const pattern[], size_t const length) : p(new base_type(kind, option, pattern, base_type::tcslen(pattern, length))) { }
 string_matcher::string_matcher(this_type const &other) : p(other.p ? new base_type(*other.p) : NULL) { }
-string_matcher::this_type &string_matcher::operator =(this_type other) { return other.swap(*this), *this; }
+string_matcher::this_type &string_matcher::operator =(this_type other) { other.swap(*this); return *this; }
 void string_matcher::swap(this_type &other) { base_type *const p = this->p; this->p = other.p; other.p = p; }
 
-#define X_ASSERT(C) assert(!(C) ? (__debugbreak(), (C)) : true);
+#define X_ASSERT(C) assert(!(C) ? (__debugbreak(), (C)) : true)
 static struct string_matcher_tester
 {
 	string_matcher_tester()
@@ -521,6 +614,7 @@ static struct string_matcher_tester
 		for (size_t i = 0; i < 2; ++i)
 		{
 			string_matcher::pattern_kind const kind = i ? string_matcher::pattern_globstar : string_matcher::pattern_glob;
+			(void)kind;
 			X_ASSERT(!string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("")).is_match(_T("a")));
 			X_ASSERT(!string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("?")).is_match(_T("")));
 			X_ASSERT(string_matcher(kind, string_matcher::pattern_option_case_insensitive, _T("*")).is_match(_T("")));
@@ -603,10 +697,16 @@ static struct string_matcher_tester
 } const string_matcher_test;
 #undef X_ASSERT
 
-bool string_matcher::is_match(wchar_t const str[], size_t const length) const { return this->p->wide  .is_match(str, base_type::tcslen(str, length)); }
-bool string_matcher::is_match(wchar_t const str[], size_t const length)       { return this->p->wide  .is_match(str, base_type::tcslen(str, length)); }
-bool string_matcher::is_match( char   const str[], size_t const length) const { return this->p->narrow.is_match(str, base_type::tcslen(str, length)); }
-bool string_matcher::is_match( char   const str[], size_t const length)       { return this->p->narrow.is_match(str, base_type::tcslen(str, length)); }
+/* NOTE:
+Proper usage of the high-water mark for prefix matching requires having an extra character past the end of the string to see whether it is dereferenced.
+Checking the last character of the string itself gives false positives, since we do not know whether a mismatch was due to the character or due to the string length.
+Even then, this is only valid if the string is examined character-by-character. It doesn't work if the string length is inspected for matching before all characters are examined.
+*/
+
+bool string_matcher::is_match(wchar_t const str[], size_t const length, size_t *const corpus_high_water_mark) const { return this->p->wide  .is_match(str, base_type::tcslen(str, length), corpus_high_water_mark); }
+bool string_matcher::is_match(wchar_t const str[], size_t const length, size_t *const corpus_high_water_mark)       { return this->p->wide  .is_match(str, base_type::tcslen(str, length), corpus_high_water_mark); }
+bool string_matcher::is_match( char   const str[], size_t const length, size_t *const corpus_high_water_mark) const { return this->p->narrow.is_match(str, base_type::tcslen(str, length), corpus_high_water_mark); }
+bool string_matcher::is_match( char   const str[], size_t const length, size_t *const corpus_high_water_mark)       { return this->p->narrow.is_match(str, base_type::tcslen(str, length), corpus_high_water_mark); }
 
 template<> struct string_matcher::base_type::special_chars<char>
 {
@@ -659,3 +759,7 @@ template<> struct string_matcher::base_type::special_chars<wchar_t>
 	static char_type carriage_return() { return L'\r'; }
 	static char_type line_feed() { return L'\n'; }
 };
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif

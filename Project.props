@@ -5,6 +5,14 @@
   <PropertyGroup>
     <XPDeprecationWarning>false</XPDeprecationWarning>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64|FALSE'">
+    <CLToolExe>clang-cl.exe</CLToolExe>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release (Windows 2003 DDK)|x64|FALSE'">
+    <ClCompile>
+      <AdditionalOptions>-Wno-unused-command-line-argument -fmsc-version=1300 %(AdditionalOptions) /Os</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemDefinitionGroup>
     <PreBuildEvent>
       <Command>CScript //nologo "$(ProjectDir)$(ProjectName).js" PreBuild "$(TargetPath)" "$(Configuration)" "$(Platform)" "$(LangID)" "$(LangName)"</Command>
@@ -20,6 +28,7 @@
       <AdditionalOptions>/d2Zi+ %(AdditionalOptions)</AdditionalOptions>
       <WarningLevel>EnableAllWarnings</WarningLevel>
       <MinimalRebuild>false</MinimalRebuild>
+      <SupportJustMyCode>false</SupportJustMyCode>
     </ClCompile>
     <Link>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
