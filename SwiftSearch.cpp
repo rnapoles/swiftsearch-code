@@ -6266,7 +6266,7 @@ public:
 		}
 		else if (id == dumpId || id == copyId || id == copyPathId || id == copyTableId)
 		{
-			this->dump_or_save(indices, id == dumpId ? 0 : id == copyId ? 2 : 1, id == copyTableId ? -1 : COLUMN_INDEX_PATH);
+			this->dump_or_save(indices, id == dumpId ? 0 : id == copyId ? 2 : 1, id == dumpId || id == copyTableId ? -1 : COLUMN_INDEX_PATH);
 		}
 		else if (id >= minID)
 		{
